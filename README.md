@@ -1,4 +1,4 @@
->> ![GGUFpad](ggufpad.svg)
+  >> ![GGUFpad](ggufpad.svg)
 
 
 # GGUFpad
