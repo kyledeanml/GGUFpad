@@ -26,10 +26,11 @@
       <stop offset="100%" stop-color="#1a202c"/>
     </linearGradient>
 
-    <!-- NVIDIA GeForce Green Accent / Glowing Edge -->
-    <linearGradient id="nvGreenGlow" x1="0%" y1="0%" x2="100%" y2="0%">
-      <stop offset="0%" stop-color="#76b900"/>
-      <stop offset="100%" stop-color="#99e31b"/>
+    <!-- Neon Blue Glowing Edge Gradient -->
+    <linearGradient id="neonBlueGlow" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#00f0ff"/>
+      <stop offset="50%" stop-color="#38bdf8"/>
+      <stop offset="100%" stop-color="#0284c7"/>
     </linearGradient>
 
     <!-- Cyan Circuit / Data Flow Gradient -->
@@ -99,7 +100,7 @@
   <g transform="translate(106, 68)">
     <!-- Cyan Energy Rays / Levitation Particles below GPU -->
     <line x1="80" y1="230" x2="65" y2="280" stroke="#00f0ff" stroke-width="1.5" stroke-opacity="0.4" stroke-dasharray="3,3"/>
-    <line x1="150" y1="236" x2="150" y2="295" stroke="#76b900" stroke-width="1.5" stroke-opacity="0.5" stroke-dasharray="3,3"/>
+    <line x1="150" y1="236" x2="150" y2="295" stroke="#38bdf8" stroke-width="1.5" stroke-opacity="0.5" stroke-dasharray="3,3"/>
     <line x1="220" y1="230" x2="235" y2="280" stroke="#00f0ff" stroke-width="1.5" stroke-opacity="0.4" stroke-dasharray="3,3"/>
 
     <!-- GPU PCIe Gold Connector Bracket (Bottom Edge) -->
@@ -118,24 +119,24 @@
     <!-- GPU Main Shroud Body (Sleek Angular Graphics Card) -->
     <path d="M 42 60 L 260 60 L 274 74 L 274 212 L 260 224 L 42 224 Z"
           fill="url(#gpuShroud)"
-          stroke="#38bdf8" stroke-width="2" stroke-opacity="0.8"
+          stroke="#00f0ff" stroke-width="2" stroke-opacity="0.8"
           filter="url(#gpuLevitateGlow)"/>
 
     <!-- Backplate Bevel & Geometric Details -->
     <path d="M 48 68 L 254 68 L 266 80 L 266 206 L 254 216 L 48 216 Z"
           fill="#111827" stroke="#1f2937" stroke-width="1.5"/>
 
-    <!-- Glowing NVIDIA / AI Accent Light Bar along the top -->
+    <!-- Sleek Neon Blue Light Bar along the top (Clean & Unbranded) -->
     <path d="M 52 74 L 250 74 L 258 82 L 258 86 L 52 86 Z"
-          fill="url(#nvGreenGlow)"/>
-    <text x="60" y="83" font-family="sans-serif" font-weight="900" font-size="8" fill="#0b1302" letter-spacing="1.5">GEFORCE RTX</text>
+          fill="url(#neonBlueGlow)" filter="url(#gpuLevitateGlow)"/>
+    <line x1="56" y1="80" x2="246" y2="80" stroke="#ffffff" stroke-width="1" stroke-opacity="0.8"/>
 
     <!-- ==================== DUAL COOLING FANS ==================== -->
     <!-- FAN 1 (Left) -->
     <g transform="translate(102, 146)">
       <!-- Fan Circular Inset Ring -->
       <circle cx="0" cy="0" r="44" fill="#0a0f1d" stroke="#1e293b" stroke-width="2.5"/>
-      <circle cx="0" cy="0" r="41" fill="none" stroke="#00f0ff" stroke-width="0.8" stroke-opacity="0.5"/>
+      <circle cx="0" cy="0" r="41" fill="none" stroke="#00f0ff" stroke-width="0.8" stroke-opacity="0.6"/>
 
       <!-- Fan Blades (Curved Aerodynamic) -->
       <path d="M 0 -14 C 10 -28 24 -36 34 -34 C 36 -28 30 -18 14 -10 Z" fill="#1e293b" stroke="#334155" stroke-width="0.8"/>
@@ -147,14 +148,14 @@
 
       <!-- Center Hub with Glowing Core -->
       <circle cx="0" cy="0" r="15" fill="url(#fanHub)" stroke="#475569" stroke-width="1.2"/>
-      <circle cx="0" cy="0" r="6" fill="#00f0ff" opacity="0.8" filter="url(#gpuLevitateGlow)"/>
+      <circle cx="0" cy="0" r="6" fill="#00f0ff" opacity="0.9" filter="url(#gpuLevitateGlow)"/>
     </g>
 
     <!-- FAN 2 (Right) -->
     <g transform="translate(206, 146)">
       <!-- Fan Circular Inset Ring -->
       <circle cx="0" cy="0" r="44" fill="#0a0f1d" stroke="#1e293b" stroke-width="2.5"/>
-      <circle cx="0" cy="0" r="41" fill="none" stroke="#76b900" stroke-width="0.8" stroke-opacity="0.5"/>
+      <circle cx="0" cy="0" r="41" fill="none" stroke="#00f0ff" stroke-width="0.8" stroke-opacity="0.6"/>
 
       <!-- Fan Blades -->
       <path d="M 0 -14 C 10 -28 24 -36 34 -34 C 36 -28 30 -18 14 -10 Z" fill="#1e293b" stroke="#334155" stroke-width="0.8"/>
@@ -166,7 +167,7 @@
 
       <!-- Center Hub with Glowing Core -->
       <circle cx="0" cy="0" r="15" fill="url(#fanHub)" stroke="#475569" stroke-width="1.2"/>
-      <circle cx="0" cy="0" r="6" fill="#76b900" opacity="0.9" filter="url(#gpuLevitateGlow)"/>
+      <circle cx="0" cy="0" r="6" fill="#00f0ff" opacity="0.9" filter="url(#gpuLevitateGlow)"/>
     </g>
 
     <!-- Center Badge: GGUF Neural Chip -->
@@ -178,6 +179,6 @@
 
     <!-- Heatpipes / Geometric Accents on the right -->
     <path d="M 256 100 L 268 100 M 256 120 L 268 120 M 256 170 L 268 170 M 256 190 L 268 190"
-          stroke="#e2e8f0" stroke-width="2.5" stroke-linecap="round" opacity="0.65"/>
+          stroke="#00f0ff" stroke-width="2.2" stroke-linecap="round" opacity="0.75"/>
   </g>
 </svg>
