@@ -1,10 +1,12 @@
+![GGUFpad](ggufpad.svg)
+
+
 # GGUFpad
 
 A hardware-accelerated GGUF model inspector, parameter tuner, and local LLM studio designed for Linux Mint Cinnamon.
 
 Styled after **PythonPad** with a sleek dark neon theme (`#0b0f19`), GGUFpad enables instant model inspection, GPU layer offloading controls, and real-time streaming chat.
 
-![GGUFpad](ggufpad.svg)
 
 ## Features
 
