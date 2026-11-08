@@ -11,6 +11,7 @@ import os
 import threading
 import json
 import time
+import cairo
 
 sys.dont_write_bytecode = True
 import gi
@@ -61,6 +62,8 @@ class GGUFpadWindow(Gtk.ApplicationWindow):
         self.current_reader = None
         self.current_model_path = None
         self.chat_history = []
+        self._watermark_pixbuf = None
+        self._watermark_loaded = False
 
         self._apply_dark_neon_theme()
         self._build_header_bar()
@@ -382,9 +385,12 @@ class GGUFpadWindow(Gtk.ApplicationWindow):
         workspace_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         self.paned.pack2(workspace_box, True, False)
 
-        # Message Scroll Area
+        # Message Scroll Area with translucent Yoga-Pad + Floating GPU watermark
         self.chat_scroll = Gtk.ScrolledWindow()
         self.chat_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        self.chat_scroll.connect_after("draw", self._on_draw_chat_watermark)
+
+        # Overlay chat messages over the canvas
         self.chat_messages_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14)
         self.chat_messages_box.set_margin_start(20)
         self.chat_messages_box.set_margin_end(20)
@@ -428,6 +434,49 @@ class GGUFpadWindow(Gtk.ApplicationWindow):
 
         input_container.pack_start(input_row, False, False, 0)
         workspace_box.pack_start(input_container, False, False, 0)
+
+    def _get_watermark_pixbuf(self, target_size=360):
+        """Load and cache the official GGUFpad SVG logo (GPU floating on yoga pad)."""
+        if not self._watermark_loaded:
+            self._watermark_loaded = True
+            svg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ggufpad.svg")
+            if os.path.exists(svg_path):
+                try:
+                    self._watermark_pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_scale(
+                        svg_path, target_size, target_size, True
+                    )
+                except Exception:
+                    self._watermark_pixbuf = None
+        return self._watermark_pixbuf
+
+    def _on_draw_chat_watermark(self, widget, cr):
+        """Render the translucent GGUFpad floating-GPU yoga pad watermark in the chat canvas background."""
+        pixbuf = self._get_watermark_pixbuf(360)
+        if pixbuf is None:
+            return False
+
+        try:
+            alloc = widget.get_allocation()
+            view_w = alloc.width
+            view_h = alloc.height
+            pw = pixbuf.get_width()
+            ph = pixbuf.get_height()
+
+            if view_w < 150 or view_h < 150:
+                return False
+
+            # Center watermark slightly to the lower-middle of the chat viewport
+            x = max(10, (view_w - pw) * 0.5)
+            y = max(10, (view_h - ph) * 0.55)
+
+            cr.save()
+            cr.set_operator(cairo.OPERATOR_OVER)
+            Gdk.cairo_set_source_pixbuf(cr, pixbuf, x, y)
+            cr.paint_with_alpha(0.22)
+            cr.restore()
+        except Exception:
+            pass
+        return False
 
     def _build_status_bar(self):
         self.statusbar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=16)
