@@ -25,6 +25,7 @@ gi.require_version('Pango', '1.0')
 from gi.repository import Gtk, Gdk, GdkPixbuf, Pango, GLib, Gio
 from gguf_parser import GGUFReader, SUPPORTED_MODEL_EXTENSIONS
 from gguf_engine import GGUFEngine
+from gguf_context import ContextFileLoader, ContextAttachment, SUPPORTED_CONTEXT_CATEGORIES
 
 
 class GGUFpadWindow(Gtk.ApplicationWindow):
@@ -63,6 +64,7 @@ class GGUFpadWindow(Gtk.ApplicationWindow):
         self.current_reader = None
         self.current_model_path = None
         self.chat_history = []
+        self.context_attachments = []
         self._watermark_pixbuf = None
         self._watermark_loaded = False
 
@@ -86,6 +88,7 @@ class GGUFpadWindow(Gtk.ApplicationWindow):
             self.load_model(initial_file)
 
         self.show_all()
+        self._refresh_context_tray()
 
     def _on_delete_event(self, widget, event):
         self.engine.stop_server()
@@ -98,6 +101,8 @@ class GGUFpadWindow(Gtk.ApplicationWindow):
         accel.connect(key, mod, Gtk.AccelFlags.VISIBLE, lambda *a: self.on_open_file())
         key_b, mod_b = Gtk.accelerator_parse("<Control>b")
         accel.connect(key_b, mod_b, Gtk.AccelFlags.VISIBLE, lambda *a: self.on_browse_models_dialog())
+        key_l, mod_l = Gtk.accelerator_parse("<Control>l")
+        accel.connect(key_l, mod_l, Gtk.AccelFlags.VISIBLE, lambda *a: self.on_load_context_files())
 
     def _apply_dark_neon_theme(self):
         """PythonPad dark neon theme (#0b0f19) with cyan/neon accents."""
@@ -170,6 +175,20 @@ class GGUFpadWindow(Gtk.ApplicationWindow):
             padding: 1px 5px;
             font-size: 10px;
             font-weight: bold;
+        }
+
+        .context-tray {
+            background-color: #0d1526;
+            border: 1px solid rgba(0, 240, 255, 0.35);
+            border-radius: 6px;
+            padding: 6px 10px;
+        }
+
+        .context-chip {
+            background-color: #13223b;
+            border: 1px solid rgba(0, 240, 255, 0.45);
+            border-radius: 4px;
+            padding: 2px 6px;
         }
 
         .model-row-btn {
@@ -315,6 +334,19 @@ class GGUFpadWindow(Gtk.ApplicationWindow):
         self.btn_browse_models.set_tooltip_text("Browse & Filter Model Files of Various Types (.gguf, .safetensors, .pt, .bin, .onnx) (Ctrl+B)")
         self.btn_browse_models.connect("clicked", lambda w: self.on_browse_models_dialog())
         btn_box.pack_start(self.btn_browse_models, False, False, 0)
+
+        self.btn_load_context = Gtk.Button()
+        ctx_hdr_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=5)
+        ctx_hdr_icon = Gtk.Image.new_from_icon_name("document-new-symbolic", Gtk.IconSize.BUTTON)
+        ctx_hdr_lbl = Gtk.Label(label="Load Context")
+        ctx_hdr_box.pack_start(ctx_hdr_icon, False, False, 0)
+        ctx_hdr_box.pack_start(ctx_hdr_lbl, False, False, 0)
+        self.btn_load_context.add(ctx_hdr_box)
+        self.btn_load_context.set_tooltip_text(
+            "Load Various File Types into Context (.pdf, .docx, .py, .csv, .xlsx, .json, .md, images, etc.) (Ctrl+L)"
+        )
+        self.btn_load_context.connect("clicked", lambda w: self.on_load_context_files())
+        btn_box.pack_start(self.btn_load_context, False, False, 0)
 
         self.btn_clear = Gtk.Button.new_from_icon_name("edit-clear-all-symbolic", Gtk.IconSize.BUTTON)
         self.btn_clear.set_tooltip_text("Clear Session History")
@@ -508,6 +540,7 @@ class GGUFpadWindow(Gtk.ApplicationWindow):
         self._add_system_message(
             "Welcome to **GGUFpad**.\n\n"
             "• Click any model in the **Model Files Browser** on the left (or click **Model Files / Open**) to load `.gguf`, `.safetensors`, `.pt`, `.bin`, or `.onnx` files.\n"
+            "• Click **Load File / Load Context (Ctrl+L)** to attach documents (`.pdf`, `.docx`, `.odt`), code (`.py`, `.js`, `.cpp`, `.ipynb`), data (`.csv`, `.xlsx`, `.json`, `.yaml`), or images into context.\n"
             "• Hardware acceleration is connected to your **NVIDIA GeForce RTX 3060 (12GB VRAM)**.\n"
             "• Type your prompt in the editor below and press **Enter** (or click Send)."
         )
@@ -519,7 +552,46 @@ class GGUFpadWindow(Gtk.ApplicationWindow):
         input_container.set_margin_bottom(10)
         input_container.set_margin_top(6)
 
+        # Active Context Files Tray (shown when files are loaded into context)
+        self.context_tray_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        self.context_tray_box.get_style_context().add_class("context-tray")
+
+        ctx_title = Gtk.Label(label="CONTEXT FILES:", xalign=0)
+        ctx_title.get_style_context().add_class("chat-meta")
+        self.context_tray_box.pack_start(ctx_title, False, False, 0)
+
+        self.context_chips_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        chips_scroll = Gtk.ScrolledWindow()
+        chips_scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.NEVER)
+        chips_scroll.set_min_content_height(28)
+        chips_scroll.add(self.context_chips_box)
+        self.context_tray_box.pack_start(chips_scroll, True, True, 0)
+
+        self.btn_clear_context = Gtk.Button(label="Clear Context")
+        self.btn_clear_context.set_tooltip_text("Remove all files from active context")
+        self.btn_clear_context.connect("clicked", lambda w: self.clear_context_files())
+        self.context_tray_box.pack_end(self.btn_clear_context, False, False, 0)
+
+        input_container.pack_start(self.context_tray_box, False, False, 0)
+
         input_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+
+        # Load File into Context Button (right next to prompt input)
+        self.btn_attach_context = Gtk.Button()
+        att_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        att_box.set_valign(Gtk.Align.CENTER)
+        att_icon = Gtk.Image.new_from_icon_name("document-new-symbolic", Gtk.IconSize.BUTTON)
+        att_lbl = Gtk.Label(label="Load File")
+        att_lbl.get_style_context().add_class("chat-meta")
+        att_box.pack_start(att_icon, False, False, 0)
+        att_box.pack_start(att_lbl, False, False, 0)
+        self.btn_attach_context.add(att_box)
+        self.btn_attach_context.set_tooltip_text(
+            "Load Various File Types into Context (.pdf, .docx, .py, .csv, .xlsx, .json, .md, images, etc.) (Ctrl+L)"
+        )
+        self.btn_attach_context.connect("clicked", lambda w: self.on_load_context_files())
+        input_row.pack_start(self.btn_attach_context, False, False, 0)
+
         self.input_entry = Gtk.TextView()
         self.input_entry.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
         self.input_entry.get_style_context().add_class("meta-card")
@@ -934,6 +1006,143 @@ class GGUFpadWindow(Gtk.ApplicationWindow):
         self.chat_messages_box.show_all()
         self._scroll_to_bottom()
 
+    def on_load_context_files(self):
+        """Opens a multi-format FileChooserDialog to load one or more files into conversation context."""
+        dialog = Gtk.FileChooserDialog(
+            title="Load File(s) into Conversation Context",
+            parent=self,
+            action=Gtk.FileChooserAction.OPEN,
+        )
+        dialog.add_buttons(
+            Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL,
+            Gtk.STOCK_OPEN, Gtk.ResponseType.ACCEPT,
+        )
+        dialog.set_select_multiple(True)
+
+        docs_dir = os.path.expanduser("~/Documents")
+        if os.path.isdir(docs_dir):
+            dialog.set_current_folder(docs_dir)
+
+        for cat_name, patterns in SUPPORTED_CONTEXT_CATEGORIES:
+            ff = Gtk.FileFilter()
+            ff.set_name(cat_name)
+            for pat in patterns:
+                ff.add_pattern(pat)
+                ff.add_pattern(pat.upper())
+            dialog.add_filter(ff)
+
+        filter_all = Gtk.FileFilter()
+        filter_all.set_name("All Files (*)")
+        filter_all.add_pattern("*")
+        dialog.add_filter(filter_all)
+
+        resp = dialog.run()
+        if resp == Gtk.ResponseType.ACCEPT:
+            filenames = dialog.get_filenames()
+            dialog.destroy()
+            for fp in filenames:
+                self.add_context_file(fp)
+        else:
+            dialog.destroy()
+
+    def add_context_file(self, file_path: str) -> Optional[ContextAttachment]:
+        """Extracts content from file_path and adds it to active context attachments."""
+        try:
+            att = ContextFileLoader.load_file(file_path)
+            # Replace if already loaded, otherwise append
+            self.context_attachments = [
+                a for a in self.context_attachments if a.file_path != file_path
+            ]
+            self.context_attachments.append(att)
+            self._refresh_context_tray()
+            self._add_system_message(
+                f"📎 Loaded into Context: **{att.filename}** (`{att.file_type}` — {att.summary_label})\n"
+                f"Click the file chip below the chat to preview extracted content, or type a prompt to query it."
+            )
+            return att
+        except Exception as e:
+            self._add_system_message(f"⚠️ Could not load file into context: {e}")
+            return None
+
+    def remove_context_file(self, file_path: str):
+        self.context_attachments = [
+            a for a in self.context_attachments if a.file_path != file_path
+        ]
+        self._refresh_context_tray()
+
+    def clear_context_files(self):
+        self.context_attachments.clear()
+        self._refresh_context_tray()
+
+    def _refresh_context_tray(self):
+        for child in self.context_chips_box.get_children():
+            self.context_chips_box.remove(child)
+
+        if not self.context_attachments:
+            self.context_tray_box.hide()
+            return
+
+        for att in self.context_attachments:
+            chip = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+            chip.get_style_context().add_class("context-chip")
+
+            type_badge = Gtk.Label(label=att.file_type)
+            type_badge.get_style_context().add_class("format-badge")
+            chip.pack_start(type_badge, False, False, 0)
+
+            preview_btn = Gtk.Button(label=f"{att.filename} ({att.summary_label})")
+            preview_btn.set_relief(Gtk.ReliefStyle.NONE)
+            preview_btn.set_tooltip_text(f"Click to preview extracted context from {att.filename}")
+            preview_btn.connect("clicked", lambda _b, a=att: self._show_context_preview_dialog(a))
+            chip.pack_start(preview_btn, False, False, 0)
+
+            rm_btn = Gtk.Button(label="✕")
+            rm_btn.set_relief(Gtk.ReliefStyle.NONE)
+            rm_btn.set_tooltip_text(f"Remove {att.filename} from context")
+            rm_btn.connect("clicked", lambda _b, p=att.file_path: self.remove_context_file(p))
+            chip.pack_start(rm_btn, False, False, 0)
+
+            self.context_chips_box.pack_start(chip, False, False, 0)
+
+        self.context_tray_box.show_all()
+
+    def _show_context_preview_dialog(self, att: ContextAttachment):
+        dialog = Gtk.Dialog(
+            title=f"Context Preview — {att.filename} ({att.file_type})",
+            transient_for=self,
+            flags=0,
+        )
+        dialog.add_buttons(Gtk.STOCK_CLOSE, Gtk.ResponseType.CLOSE)
+        dialog.set_default_size(640, 440)
+
+        area = dialog.get_content_area()
+        area.set_spacing(8)
+        area.set_margin_start(12)
+        area.set_margin_end(12)
+        area.set_margin_top(12)
+        area.set_margin_bottom(12)
+
+        info_lbl = Gtk.Label(
+            label=f"File: {att.file_path}  |  Type: {att.file_type}  |  {att.summary_label}",
+            xalign=0,
+        )
+        info_lbl.get_style_context().add_class("chat-meta")
+        area.pack_start(info_lbl, False, False, 0)
+
+        tv = Gtk.TextView()
+        tv.set_editable(False)
+        tv.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+        tv.get_buffer().set_text(att.extracted_text)
+
+        sc = Gtk.ScrolledWindow()
+        sc.set_vexpand(True)
+        sc.add(tv)
+        area.pack_start(sc, True, True, 0)
+
+        dialog.show_all()
+        dialog.run()
+        dialog.destroy()
+
     def _on_input_key_press(self, widget, event):
         if event.keyval == Gdk.KEY_Return and not (event.state & Gdk.ModifierType.SHIFT_MASK):
             self.on_send()
@@ -944,11 +1153,18 @@ class GGUFpadWindow(Gtk.ApplicationWindow):
         buf = self.input_entry.get_buffer()
         start, end = buf.get_bounds()
         text = buf.get_text(start, end, True).strip()
-        if not text:
+        if not text and not self.context_attachments:
             return
+        if not text and self.context_attachments:
+            text = "Please analyze and summarize the attached context file(s)."
 
         buf.set_text("")
-        self._add_user_message(text)
+        if self.context_attachments:
+            attached_names = ", ".join(a.filename for a in self.context_attachments)
+            display_user_msg = f"📎 [Context: {attached_names}]\n{text}"
+        else:
+            display_user_msg = text
+        self._add_user_message(display_user_msg)
 
         sys_buf = self.sys_prompt_entry.get_buffer()
         s_start, s_end = sys_buf.get_bounds()
@@ -973,6 +1189,8 @@ class GGUFpadWindow(Gtk.ApplicationWindow):
 
         ngl = int(self.gpu_layers_scale.get_value())
         history_snapshot = list(self.chat_history)
+        context_block = "\n\n".join(a.format_for_prompt() for a in self.context_attachments)
+        image_urls = [a.image_data_url for a in self.context_attachments if a.image_data_url]
         token_count = [0]
         response_text = []
 
@@ -987,7 +1205,8 @@ class GGUFpadWindow(Gtk.ApplicationWindow):
             GLib.idle_add(self._scroll_to_bottom)
 
         def on_done(full_reply):
-            self.chat_history.append({"role": "user", "content": text})
+            hist_user = f"{context_block}\n\n{text}" if context_block else text
+            self.chat_history.append({"role": "user", "content": hist_user})
             self.chat_history.append({"role": "assistant", "content": full_reply})
             GLib.idle_add(self._scroll_to_bottom)
 
@@ -1005,6 +1224,8 @@ class GGUFpadWindow(Gtk.ApplicationWindow):
             prompt=text,
             system_prompt=sys_prompt,
             history=history_snapshot,
+            context_block=context_block,
+            image_data_urls=image_urls,
             temperature=0.7,
             model_path=self.current_model_path,
             n_gpu_layers=ngl,

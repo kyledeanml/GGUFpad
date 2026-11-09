@@ -185,7 +185,9 @@ class GGUFEngine:
         self,
         prompt: str,
         system_prompt: str = "You are a helpful, capable AI assistant.",
-        history: Optional[List[Dict[str, str]]] = None,
+        history: Optional[List[Dict[str, Any]]] = None,
+        context_block: str = "",
+        image_data_urls: Optional[List[str]] = None,
         temperature: float = 0.7,
         max_tokens: int = 1024,
         model_path: Optional[str] = None,
@@ -232,10 +234,25 @@ class GGUFEngine:
                 if on_status:
                     on_status(f"GPU: Active ({CUDA_DEVICE_NAME})")
 
-            messages = [{"role": "system", "content": system_prompt}]
+            effective_user_text = prompt
+            if context_block:
+                effective_user_text = (
+                    f"Use the following loaded context files to answer the user's request:\n\n"
+                    f"{context_block}\n\n"
+                    f"User Request:\n{prompt}"
+                )
+
+            messages: List[Dict[str, Any]] = [{"role": "system", "content": system_prompt}]
             if history:
                 messages.extend(history)
-            messages.append({"role": "user", "content": prompt})
+
+            if image_data_urls:
+                content_parts: List[Dict[str, Any]] = [{"type": "text", "text": effective_user_text}]
+                for url in image_data_urls:
+                    content_parts.append({"type": "image_url", "image_url": {"url": url}})
+                messages.append({"role": "user", "content": content_parts})
+            else:
+                messages.append({"role": "user", "content": effective_user_text})
 
             payload = {
                 "messages": messages,

@@ -31,6 +31,7 @@ from gguf_parser import (
     SUPPORTED_MODEL_EXTENSIONS,
 )
 from gguf_engine import GGUFEngine
+from gguf_context import ContextFileLoader, SUPPORTED_CONTEXT_CATEGORIES
 
 
 class TestGGUFpadIntegrity(unittest.TestCase):
@@ -142,7 +143,7 @@ class TestGGUFpadIntegrity(unittest.TestCase):
         self.assertEqual(pixbuf.get_width(), 360)
 
     def test_ui_temperature_removed_and_model_browser_present(self):
-        """Verify temperature slider is removed and model file browser controls exist."""
+        """Verify temperature slider is removed, model file browser and context file loader exist."""
         ui_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ggufpad.py")
         with open(ui_path, "r", encoding="utf-8") as f:
             ui_code = f.read()
@@ -151,6 +152,76 @@ class TestGGUFpadIntegrity(unittest.TestCase):
         self.assertIn("MODEL FILES BROWSER", ui_code)
         self.assertIn("on_browse_models_dialog", ui_code)
         self.assertIn("refresh_model_browser", ui_code)
+        self.assertIn("btn_load_context", ui_code)
+        self.assertIn("btn_attach_context", ui_code)
+        self.assertIn("on_load_context_files", ui_code)
+        self.assertIn("context_tray_box", ui_code)
+
+    def test_context_file_loader_multiformat(self):
+        """Verify ContextFileLoader extracts text, tables, notebooks, docx, and image base64 cleanly."""
+        import zipfile
+
+        # 1. Python file
+        with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as tf:
+            py_path = tf.name
+            tf.write("def compute_vram():\n    return 12\n")
+        try:
+            att = ContextFileLoader.load_file(py_path)
+            self.assertEqual(att.file_type, "PYTHON")
+            self.assertIn("```python", att.extracted_text)
+            self.assertIn("compute_vram", att.format_for_prompt())
+        finally:
+            os.remove(py_path)
+
+        # 2. CSV file
+        with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False) as tf:
+            csv_path = tf.name
+            tf.write("model,quant,vram_gb\nLlama-3.1-8B,Q5_K_M,5.34\nQwen2.5-7B,Q5_K_M,5.07\n")
+        try:
+            att = ContextFileLoader.load_file(csv_path)
+            self.assertEqual(att.file_type, "CSV/TSV")
+            self.assertIn("Llama-3.1-8B", att.extracted_text)
+            self.assertIn("2 rows, 3 cols", att.summary_label)
+        finally:
+            os.remove(csv_path)
+
+        # 3. DOCX archive
+        with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as tf:
+            docx_path = tf.name
+        try:
+            with zipfile.ZipFile(docx_path, "w") as zf:
+                zf.writestr(
+                    "word/document.xml",
+                    '<?xml version="1.0"?>'
+                    '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+                    '<w:body><w:p><w:r><w:t>Hello from GGUFpad DOCX context!</w:t></w:r></w:p></w:body>'
+                    '</w:document>',
+                )
+            att = ContextFileLoader.load_file(docx_path)
+            self.assertEqual(att.file_type, "DOCX")
+            self.assertIn("Hello from GGUFpad DOCX context!", att.extracted_text)
+        finally:
+            os.remove(docx_path)
+
+        # 4. Jupyter Notebook (.ipynb)
+        with tempfile.NamedTemporaryFile("w", suffix=".ipynb", delete=False) as tf:
+            nb_path = tf.name
+            json.dump(
+                {
+                    "cells": [
+                        {"cell_type": "markdown", "source": ["# Experiment Notes"]},
+                        {"cell_type": "code", "source": ["import torch\nprint(torch.cuda.is_available())"]},
+                    ]
+                },
+                tf,
+            )
+        try:
+            att = ContextFileLoader.load_file(nb_path)
+            self.assertEqual(att.file_type, "NOTEBOOK")
+            self.assertIn("Experiment Notes", att.extracted_text)
+            self.assertIn("torch.cuda.is_available", att.extracted_text)
+        finally:
+            os.remove(nb_path)
 
 
 if __name__ == "__main__":
