@@ -2,7 +2,8 @@
 """
 GGUFpad - Local GGUF LLM Studio & Workstation
 Styled after PythonPad: dark neon theme (#0b0f19), headerbar with linked controls,
-sidebar inspector, interactive prompt/inference console, and bottom statusbar.
+multi-format model file browser, sidebar inspector, interactive prompt/inference console,
+and bottom statusbar.
 Designed for Linux Mint Cinnamon.
 """
 
@@ -22,7 +23,7 @@ gi.require_version('GdkPixbuf', '2.0')
 gi.require_version('Pango', '1.0')
 
 from gi.repository import Gtk, Gdk, GdkPixbuf, Pango, GLib, Gio
-from gguf_parser import GGUFReader
+from gguf_parser import GGUFReader, SUPPORTED_MODEL_EXTENSIONS
 from gguf_engine import GGUFEngine
 
 
@@ -30,11 +31,11 @@ class GGUFpadWindow(Gtk.ApplicationWindow):
     """Main window for GGUFpad, matching PythonPad's aesthetics and controls."""
 
     APP_NAME = "GGUFpad"
-    APP_VERSION = "2.0"
+    APP_VERSION = "2.1"
 
     def __init__(self, app, initial_file=None):
         super().__init__(application=app, title=self.APP_NAME)
-        self.set_default_size(1120, 760)
+        self.set_default_size(1160, 780)
         self.set_position(Gtk.WindowPosition.CENTER)
 
         # Set WM Class and Icons
@@ -65,15 +66,38 @@ class GGUFpadWindow(Gtk.ApplicationWindow):
         self._watermark_pixbuf = None
         self._watermark_loaded = False
 
+        default_models_dir = os.path.expanduser("~/Documents/models")
+        if not os.path.isdir(default_models_dir):
+            default_models_dir = os.path.expanduser("~/Documents")
+        self.models_directory = default_models_dir
+
         self._apply_dark_neon_theme()
         self._build_header_bar()
         self._build_main_area()
         self._build_status_bar()
+        self._setup_shortcuts()
+
+        self.connect("delete-event", self._on_delete_event)
+
+        # Populate the model browser list on startup
+        self.refresh_model_browser()
 
         if initial_file and os.path.isfile(initial_file):
             self.load_model(initial_file)
 
         self.show_all()
+
+    def _on_delete_event(self, widget, event):
+        self.engine.stop_server()
+        return False
+
+    def _setup_shortcuts(self):
+        accel = Gtk.AccelGroup()
+        self.add_accel_group(accel)
+        key, mod = Gtk.accelerator_parse("<Control>o")
+        accel.connect(key, mod, Gtk.AccelFlags.VISIBLE, lambda *a: self.on_open_file())
+        key_b, mod_b = Gtk.accelerator_parse("<Control>b")
+        accel.connect(key_b, mod_b, Gtk.AccelFlags.VISIBLE, lambda *a: self.on_browse_models_dialog())
 
     def _apply_dark_neon_theme(self):
         """PythonPad dark neon theme (#0b0f19) with cyan/neon accents."""
@@ -136,6 +160,27 @@ class GGUFpadWindow(Gtk.ApplicationWindow):
             padding: 2px 8px;
             font-weight: bold;
             font-size: 11px;
+        }
+
+        .format-badge {
+            background-color: #034b75;
+            color: #00f0ff;
+            border: 1px solid rgba(0, 240, 255, 0.4);
+            border-radius: 3px;
+            padding: 1px 5px;
+            font-size: 10px;
+            font-weight: bold;
+        }
+
+        .model-row-btn {
+            background-color: #0d1526;
+            border: 1px solid rgba(0, 240, 255, 0.18);
+            border-radius: 4px;
+            padding: 5px 8px;
+        }
+        .model-row-btn:hover {
+            background-color: #162440;
+            border-color: #00f0ff;
         }
 
         paned > separator {
@@ -251,14 +296,25 @@ class GGUFpadWindow(Gtk.ApplicationWindow):
         self.header.set_subtitle("GGUF Studio & Multimodal Inference")
         self.set_titlebar(self.header)
 
-        # File actions: Open GGUF, Clear Chat
+        # File actions: Open Model, Browse Model Files (Multi-format), Clear Chat
         btn_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
         Gtk.StyleContext.add_class(btn_box.get_style_context(), "linked")
 
         self.btn_open = Gtk.Button.new_from_icon_name("document-open-symbolic", Gtk.IconSize.BUTTON)
-        self.btn_open.set_tooltip_text("Open GGUF Model (Ctrl+O)")
+        self.btn_open.set_tooltip_text("Open Model File (Ctrl+O)")
         self.btn_open.connect("clicked", lambda w: self.on_open_file())
         btn_box.pack_start(self.btn_open, False, False, 0)
+
+        self.btn_browse_models = Gtk.Button()
+        browse_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=5)
+        browse_icon = Gtk.Image.new_from_icon_name("folder-visiting-symbolic", Gtk.IconSize.BUTTON)
+        browse_lbl = Gtk.Label(label="Model Files")
+        browse_box.pack_start(browse_icon, False, False, 0)
+        browse_box.pack_start(browse_lbl, False, False, 0)
+        self.btn_browse_models.add(browse_box)
+        self.btn_browse_models.set_tooltip_text("Browse & Filter Model Files of Various Types (.gguf, .safetensors, .pt, .bin, .onnx) (Ctrl+B)")
+        self.btn_browse_models.connect("clicked", lambda w: self.on_browse_models_dialog())
+        btn_box.pack_start(self.btn_browse_models, False, False, 0)
 
         self.btn_clear = Gtk.Button.new_from_icon_name("edit-clear-all-symbolic", Gtk.IconSize.BUTTON)
         self.btn_clear.set_tooltip_text("Clear Session History")
@@ -278,7 +334,7 @@ class GGUFpadWindow(Gtk.ApplicationWindow):
         gpu_box.pack_start(gpu_label, False, False, 0)
         self.header.pack_end(gpu_box)
 
-        # Right control group: Sidebar toggle & Refresh
+        # Right control group: Sidebar toggle
         ctrl_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
         Gtk.StyleContext.add_class(ctrl_box.get_style_context(), "linked")
 
@@ -293,15 +349,15 @@ class GGUFpadWindow(Gtk.ApplicationWindow):
 
     def _build_main_area(self):
         self.paned = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
-        self.paned.set_position(340)
+        self.paned.set_position(360)
         self.add(self.paned)
 
-        # Left Column: Model Inspector & Parameters Sidebar
+        # Left Column: Model Inspector & Browser Sidebar
         self.sidebar_scroll = Gtk.ScrolledWindow()
         self.sidebar_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
         self.sidebar_scroll.get_style_context().add_class("sidebar-panel")
 
-        sidebar_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        sidebar_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
         sidebar_box.set_margin_start(14)
         sidebar_box.set_margin_end(14)
         sidebar_box.set_margin_top(14)
@@ -309,8 +365,60 @@ class GGUFpadWindow(Gtk.ApplicationWindow):
         self.sidebar_scroll.add(sidebar_box)
         self.paned.pack1(self.sidebar_scroll, False, False)
 
-        # Model Info Card
-        lbl_meta = Gtk.Label(label="GGUF MODEL SPECIFICATION", xalign=0)
+        # 1. Model Files Browser Section
+        browser_hdr_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        lbl_browser = Gtk.Label(label="MODEL FILES BROWSER", xalign=0)
+        lbl_browser.get_style_context().add_class("section-header")
+        browser_hdr_row.pack_start(lbl_browser, True, True, 0)
+
+        btn_pick_dir = Gtk.Button.new_from_icon_name("folder-open-symbolic", Gtk.IconSize.MENU)
+        btn_pick_dir.set_tooltip_text("Select Models Directory")
+        btn_pick_dir.connect("clicked", lambda w: self.on_select_models_folder())
+        browser_hdr_row.pack_end(btn_pick_dir, False, False, 0)
+
+        btn_refresh_dir = Gtk.Button.new_from_icon_name("view-refresh-symbolic", Gtk.IconSize.MENU)
+        btn_refresh_dir.set_tooltip_text("Rescan Model Files")
+        btn_refresh_dir.connect("clicked", lambda w: self.refresh_model_browser())
+        browser_hdr_row.pack_end(btn_refresh_dir, False, False, 0)
+
+        sidebar_box.pack_start(browser_hdr_row, False, False, 0)
+
+        browser_card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        browser_card.get_style_context().add_class("meta-card")
+
+        # Type Filter Combo
+        filter_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        filter_lbl = Gtk.Label(label="File Type:", xalign=0)
+        filter_lbl.get_style_context().add_class("chat-meta")
+        self.type_filter_combo = Gtk.ComboBoxText()
+        self.type_filters = [
+            ("All Model Types", SUPPORTED_MODEL_EXTENSIONS),
+            ("GGUF (.gguf)", (".gguf",)),
+            ("SafeTensors (.safetensors)", (".safetensors",)),
+            ("PyTorch (.pt, .pth)", (".pt", ".pth")),
+            ("Binary Weights (.bin)", (".bin",)),
+            ("ONNX (.onnx)", (".onnx",)),
+        ]
+        for label_text, _exts in self.type_filters:
+            self.type_filter_combo.append_text(label_text)
+        self.type_filter_combo.set_active(0)
+        self.type_filter_combo.connect("changed", lambda c: self.refresh_model_browser())
+        filter_row.pack_start(filter_lbl, False, False, 0)
+        filter_row.pack_start(self.type_filter_combo, True, True, 0)
+        browser_card.pack_start(filter_row, False, False, 0)
+
+        # Scrollable list of discovered models
+        self.model_list_scroll = Gtk.ScrolledWindow()
+        self.model_list_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        self.model_list_scroll.set_min_content_height(135)
+        self.model_list_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        self.model_list_scroll.add(self.model_list_box)
+        browser_card.pack_start(self.model_list_scroll, False, False, 0)
+
+        sidebar_box.pack_start(browser_card, False, False, 0)
+
+        # 2. Model Info Card
+        lbl_meta = Gtk.Label(label="MODEL SPECIFICATION", xalign=0)
         lbl_meta.get_style_context().add_class("section-header")
         sidebar_box.pack_start(lbl_meta, False, False, 0)
 
@@ -323,39 +431,36 @@ class GGUFpadWindow(Gtk.ApplicationWindow):
             k_lbl.get_style_context().add_class("chat-meta")
             v_lbl = Gtk.Label(label="—", xalign=1)
             v_lbl.set_selectable(True)
+            v_lbl.set_ellipsize(Pango.EllipsizeMode.MIDDLE)
+            v_lbl.set_max_width_chars(24)
             row.pack_start(k_lbl, True, True, 0)
             row.pack_start(v_lbl, False, False, 0)
             self.meta_card.pack_start(row, False, False, 0)
             self.meta_labels[key] = v_lbl
         sidebar_box.pack_start(self.meta_card, False, False, 0)
 
-        # Hardware & Offload Tuning
+        # 3. Hardware & Offload Tuning (Temperature slider removed)
         lbl_tuning = Gtk.Label(label="INFERENCE & GPU TUNING", xalign=0)
         lbl_tuning.get_style_context().add_class("section-header")
         sidebar_box.pack_start(lbl_tuning, False, False, 0)
 
-        tune_card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        tune_card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         tune_card.get_style_context().add_class("meta-card")
 
         # GPU Offload Slider
         self.gpu_layers_label = Gtk.Label(label="GPU Layers (-ngl): 33 (Max RTX 3060)", xalign=0)
         self.gpu_layers_scale = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0, 80, 1)
         self.gpu_layers_scale.set_value(33)
-        self.gpu_layers_scale.connect("value-changed", lambda s: self.gpu_layers_label.set_text(f"GPU Layers (-ngl): {int(s.get_value())}"))
+        self.gpu_layers_scale.connect(
+            "value-changed",
+            lambda s: self.gpu_layers_label.set_text(f"GPU Layers (-ngl): {int(s.get_value())}")
+        )
         tune_card.pack_start(self.gpu_layers_label, False, False, 0)
         tune_card.pack_start(self.gpu_layers_scale, False, False, 0)
 
-        # Temperature Slider
-        self.temp_label = Gtk.Label(label="Temperature: 0.70", xalign=0)
-        self.temp_scale = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0.0, 1.5, 0.05)
-        self.temp_scale.set_value(0.70)
-        self.temp_scale.connect("value-changed", lambda s: self.temp_label.set_text(f"Temperature: {s.get_value():.2f}"))
-        tune_card.pack_start(self.temp_label, False, False, 0)
-        tune_card.pack_start(self.temp_scale, False, False, 0)
-
         sidebar_box.pack_start(tune_card, False, False, 0)
 
-        # System Role Template
+        # 4. System Role Template
         lbl_role = Gtk.Label(label="SYSTEM ROLE TEMPLATE", xalign=0)
         lbl_role.get_style_context().add_class("section-header")
         sidebar_box.pack_start(lbl_role, False, False, 0)
@@ -377,7 +482,7 @@ class GGUFpadWindow(Gtk.ApplicationWindow):
         self.sys_prompt_entry.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
         self.sys_prompt_entry.get_buffer().set_text(self.sys_templates["General Assistant"])
         sys_scroll = Gtk.ScrolledWindow()
-        sys_scroll.set_min_content_height(75)
+        sys_scroll.set_min_content_height(65)
         sys_scroll.add(self.sys_prompt_entry)
         sidebar_box.pack_start(sys_scroll, False, False, 0)
 
@@ -402,7 +507,7 @@ class GGUFpadWindow(Gtk.ApplicationWindow):
         # Welcome Card
         self._add_system_message(
             "Welcome to **GGUFpad**.\n\n"
-            "• Click **Open (Ctrl+O)** to inspect any `.gguf` model architecture, quantization, and parameters.\n"
+            "• Click any model in the **Model Files Browser** on the left (or click **Model Files / Open**) to load `.gguf`, `.safetensors`, `.pt`, `.bin`, or `.onnx` files.\n"
             "• Hardware acceleration is connected to your **NVIDIA GeForce RTX 3060 (12GB VRAM)**.\n"
             "• Type your prompt in the editor below and press **Enter** (or click Send)."
         )
@@ -435,6 +540,184 @@ class GGUFpadWindow(Gtk.ApplicationWindow):
         input_container.pack_start(input_row, False, False, 0)
         workspace_box.pack_start(input_container, False, False, 0)
 
+    def refresh_model_browser(self):
+        """Scans self.models_directory (and common model paths) for model files of selected types."""
+        for child in self.model_list_box.get_children():
+            self.model_list_box.remove(child)
+
+        idx = self.type_filter_combo.get_active()
+        if idx < 0 or idx >= len(self.type_filters):
+            idx = 0
+        allowed_exts = self.type_filters[idx][1]
+
+        found_files = []
+        if os.path.isdir(self.models_directory):
+            try:
+                for root, _dirs, files in os.walk(self.models_directory):
+                    for fname in sorted(files):
+                        ext = os.path.splitext(fname)[1].lower()
+                        if ext in allowed_exts:
+                            full_p = os.path.join(root, fname)
+                            try:
+                                sz_gb = os.path.getsize(full_p) / (1024 ** 3)
+                            except OSError:
+                                sz_gb = 0.0
+                            found_files.append((fname, full_p, ext.lstrip(".").upper(), sz_gb))
+            except Exception:
+                pass
+
+        if not found_files:
+            empty_lbl = Gtk.Label(
+                label=f"No matching model files in:\n{self.models_directory}",
+                xalign=0,
+            )
+            empty_lbl.set_line_wrap(True)
+            empty_lbl.get_style_context().add_class("chat-meta")
+            self.model_list_box.pack_start(empty_lbl, False, False, 4)
+        else:
+            for fname, full_p, badge_txt, sz_gb in found_files:
+                btn = Gtk.Button()
+                btn.get_style_context().add_class("model-row-btn")
+                btn.set_tooltip_text(full_p)
+                row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+
+                badge = Gtk.Label(label=badge_txt)
+                badge.get_style_context().add_class("format-badge")
+                row.pack_start(badge, False, False, 0)
+
+                name_lbl = Gtk.Label(label=fname, xalign=0)
+                name_lbl.set_ellipsize(Pango.EllipsizeMode.MIDDLE)
+                name_lbl.set_max_width_chars(22)
+                row.pack_start(name_lbl, True, True, 0)
+
+                sz_lbl = Gtk.Label(label=f"{sz_gb:.1f}G", xalign=1)
+                sz_lbl.get_style_context().add_class("chat-meta")
+                row.pack_end(sz_lbl, False, False, 0)
+
+                btn.add(row)
+                btn.connect("clicked", lambda _b, p=full_p: self.load_model(p))
+                self.model_list_box.pack_start(btn, False, False, 0)
+
+        self.model_list_box.show_all()
+
+    def on_select_models_folder(self):
+        dialog = Gtk.FileChooserDialog(
+            title="Select Directory Containing Models",
+            parent=self,
+            action=Gtk.FileChooserAction.SELECT_FOLDER,
+        )
+        dialog.add_buttons(
+            Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL,
+            Gtk.STOCK_OPEN, Gtk.ResponseType.ACCEPT,
+        )
+        if os.path.isdir(self.models_directory):
+            dialog.set_current_folder(self.models_directory)
+        resp = dialog.run()
+        if resp == Gtk.ResponseType.ACCEPT:
+            folder = dialog.get_filename()
+            if folder and os.path.isdir(folder):
+                self.models_directory = folder
+                self.refresh_model_browser()
+        dialog.destroy()
+
+    def on_browse_models_dialog(self):
+        """Shows a dedicated multi-format Model Files Browser dialog."""
+        dialog = Gtk.Dialog(
+            title="Model Files Browser — All Formats",
+            transient_for=self,
+            flags=0,
+        )
+        dialog.add_buttons(Gtk.STOCK_CLOSE, Gtk.ResponseType.CLOSE)
+        dialog.set_default_size(680, 440)
+
+        content = dialog.get_content_area()
+        content.set_spacing(10)
+        content.set_margin_start(14)
+        content.set_margin_end(14)
+        content.set_margin_top(14)
+        content.set_margin_bottom(14)
+
+        top_bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        dir_lbl = Gtk.Label(label=f"Folder: {self.models_directory}", xalign=0)
+        dir_lbl.set_ellipsize(Pango.EllipsizeMode.START)
+        top_bar.pack_start(dir_lbl, True, True, 0)
+
+        filter_combo = Gtk.ComboBoxText()
+        for label_text, _exts in self.type_filters:
+            filter_combo.append_text(label_text)
+        filter_combo.set_active(self.type_filter_combo.get_active())
+        top_bar.pack_start(filter_combo, False, False, 0)
+
+        change_dir_btn = Gtk.Button(label="Change Folder...")
+        top_bar.pack_start(change_dir_btn, False, False, 0)
+        content.pack_start(top_bar, False, False, 0)
+
+        # TreeView / ListStore of model files
+        store = Gtk.ListStore(str, str, str, str)
+        tree = Gtk.TreeView(model=store)
+        for idx, col_title in enumerate(["Format", "Model Filename", "Size", "Full Path"]):
+            renderer = Gtk.CellRendererText()
+            if idx == 1:
+                renderer.set_property("ellipsize", Pango.EllipsizeMode.MIDDLE)
+            col = Gtk.TreeViewColumn(col_title, renderer, text=idx)
+            col.set_resizable(True)
+            if idx == 1:
+                col.set_expand(True)
+            tree.append_column(col)
+
+        def populate_store():
+            store.clear()
+            f_idx = filter_combo.get_active()
+            if f_idx < 0 or f_idx >= len(self.type_filters):
+                f_idx = 0
+            allowed = self.type_filters[f_idx][1]
+            if os.path.isdir(self.models_directory):
+                for root, _dirs, files in os.walk(self.models_directory):
+                    for fname in sorted(files):
+                        ext = os.path.splitext(fname)[1].lower()
+                        if ext in allowed:
+                            full_p = os.path.join(root, fname)
+                            try:
+                                sz_gb = f"{os.path.getsize(full_p) / (1024**3):.2f} GB"
+                            except OSError:
+                                sz_gb = "—"
+                            store.append([ext.lstrip(".").upper(), fname, sz_gb, full_p])
+
+        populate_store()
+        filter_combo.connect("changed", lambda _c: populate_store())
+
+        def on_change_folder(_b):
+            self.on_select_models_folder()
+            dir_lbl.set_text(f"Folder: {self.models_directory}")
+            populate_store()
+
+        change_dir_btn.connect("clicked", on_change_folder)
+
+        def on_row_activated(tv, path, _col):
+            model_iter = store.get_iter(path)
+            if model_iter:
+                full_p = store.get_value(model_iter, 3)
+                dialog.response(Gtk.ResponseType.CLOSE)
+                self.load_model(full_p)
+
+        tree.connect("row-activated", on_row_activated)
+
+        scroll = Gtk.ScrolledWindow()
+        scroll.set_vexpand(True)
+        scroll.add(tree)
+        content.pack_start(scroll, True, True, 0)
+
+        hint_lbl = Gtk.Label(
+            label="Double-click any model file to inspect & load it into GGUFpad.",
+            xalign=0,
+        )
+        hint_lbl.get_style_context().add_class("chat-meta")
+        content.pack_start(hint_lbl, False, False, 0)
+
+        dialog.show_all()
+        dialog.run()
+        dialog.destroy()
+
     def _get_watermark_pixbuf(self, target_size=360):
         """Load and cache the official GGUFpad SVG logo (GPU floating on yoga pad)."""
         if not self._watermark_loaded:
@@ -465,7 +748,6 @@ class GGUFpadWindow(Gtk.ApplicationWindow):
             if view_w < 150 or view_h < 150:
                 return False
 
-            # Center watermark slightly to the lower-middle of the chat viewport
             x = max(10, (view_w - pw) * 0.5)
             y = max(10, (view_h - ph) * 0.55)
 
@@ -491,9 +773,6 @@ class GGUFpadWindow(Gtk.ApplicationWindow):
         self.statusbar.pack_start(self.status_gpu_label, True, True, 0)
         self.statusbar.pack_end(self.status_tokens_label, False, False, 0)
 
-        self.paned.get_parent() or None
-        # Add to window vertical layout
-        # Re-pack with a main vertical box
         main_vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         self.remove(self.paned)
         main_vbox.pack_start(self.paned, True, True, 0)
@@ -503,7 +782,7 @@ class GGUFpadWindow(Gtk.ApplicationWindow):
     def _on_toggle_sidebar(self, btn):
         if btn.get_active():
             self.sidebar_scroll.show()
-            self.paned.set_position(340)
+            self.paned.set_position(360)
         else:
             self.sidebar_scroll.hide()
 
@@ -514,7 +793,7 @@ class GGUFpadWindow(Gtk.ApplicationWindow):
 
     def on_open_file(self):
         dialog = Gtk.FileChooserDialog(
-            title="Open GGUF Model",
+            title="Open Model File",
             parent=self,
             action=Gtk.FileChooserAction.OPEN,
         )
@@ -523,13 +802,39 @@ class GGUFpadWindow(Gtk.ApplicationWindow):
             Gtk.STOCK_OPEN, Gtk.ResponseType.ACCEPT
         )
 
+        if os.path.isdir(self.models_directory):
+            dialog.set_current_folder(self.models_directory)
+
+        filter_models = Gtk.FileFilter()
+        filter_models.set_name("All Supported Models (*.gguf, *.safetensors, *.pt, *.pth, *.bin, *.onnx)")
+        for ext in SUPPORTED_MODEL_EXTENSIONS:
+            filter_models.add_pattern(f"*{ext}")
+        dialog.add_filter(filter_models)
+
         filter_gguf = Gtk.FileFilter()
         filter_gguf.set_name("GGUF Models (*.gguf)")
         filter_gguf.add_pattern("*.gguf")
         dialog.add_filter(filter_gguf)
 
+        filter_st = Gtk.FileFilter()
+        filter_st.set_name("SafeTensors Models (*.safetensors)")
+        filter_st.add_pattern("*.safetensors")
+        dialog.add_filter(filter_st)
+
+        filter_pt = Gtk.FileFilter()
+        filter_pt.set_name("PyTorch / Binary Models (*.pt, *.pth, *.bin)")
+        filter_pt.add_pattern("*.pt")
+        filter_pt.add_pattern("*.pth")
+        filter_pt.add_pattern("*.bin")
+        dialog.add_filter(filter_pt)
+
+        filter_onnx = Gtk.FileFilter()
+        filter_onnx.set_name("ONNX Models (*.onnx)")
+        filter_onnx.add_pattern("*.onnx")
+        dialog.add_filter(filter_onnx)
+
         filter_all = Gtk.FileFilter()
-        filter_all.set_name("All Files")
+        filter_all.set_name("All Files (*)")
         filter_all.add_pattern("*")
         dialog.add_filter(filter_all)
 
@@ -563,15 +868,36 @@ class GGUFpadWindow(Gtk.ApplicationWindow):
             self.status_model_label.set_text(f"Model: {summary['Filename']} ({summary['Quantization']})")
 
             self._add_system_message(
-                f"Loaded GGUF Model: **{summary['Filename']}**\n\n"
+                f"Loaded Model: **{summary['Filename']}**\n\n"
                 f"• **Architecture**: {summary['Architecture']}\n"
                 f"• **Parameters**: {summary['Parameters']}\n"
-                f"• **Quantization**: {summary['Quantization']}\n"
+                f"• **Format / Quantization**: {summary['Quantization']}\n"
                 f"• **Context Window**: {summary['Context Length']} tokens\n"
                 f"• **Transformer Blocks**: {blocks} (Configured for RTX 3060 offloading)"
             )
+
+            # Pre-warm llama-server in the background if this is a GGUF model
+            if self.current_reader.is_gguf:
+                ngl = int(self.gpu_layers_scale.get_value())
+                self.status_gpu_label.set_text("GPU: Loading model into RTX 3060 VRAM...")
+
+                def bg_warm():
+                    started = self.engine.start_llama_server(
+                        model_path=file_path,
+                        n_gpu_layers=ngl,
+                        port=8080,
+                        on_ready=lambda: GLib.idle_add(
+                            self.status_gpu_label.set_text, "GPU: Ready & Loaded (RTX 3060 CUDA)"
+                        ),
+                    )
+                    if started and self.engine.wait_until_ready(timeout=60.0):
+                        GLib.idle_add(
+                            self.status_gpu_label.set_text, "GPU: Ready & Loaded (RTX 3060 CUDA)"
+                        )
+
+                threading.Thread(target=bg_warm, daemon=True).start()
         except Exception as e:
-            self._add_system_message(f"⚠️ Error reading GGUF file: {str(e)}")
+            self._add_system_message(f"⚠️ Error reading model file: {str(e)}")
 
     def _add_system_message(self, text: str):
         bubble = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
@@ -627,7 +953,6 @@ class GGUFpadWindow(Gtk.ApplicationWindow):
         sys_buf = self.sys_prompt_entry.get_buffer()
         s_start, s_end = sys_buf.get_bounds()
         sys_prompt = sys_buf.get_text(s_start, s_end, True).strip()
-        temp = self.temp_scale.get_value()
 
         assist_bubble = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         assist_bubble.get_style_context().add_class("chat-bubble-assistant")
@@ -636,7 +961,7 @@ class GGUFpadWindow(Gtk.ApplicationWindow):
         meta = Gtk.Label(label=f"Assistant ({model_title if model_title != '—' else 'Local GGUF'})", xalign=0)
         meta.get_style_context().add_class("chat-meta")
 
-        content_label = Gtk.Label(label="", xalign=0)
+        content_label = Gtk.Label(label="⏳ Waiting for GPU inference...", xalign=0)
         content_label.set_line_wrap(True)
         content_label.set_selectable(True)
 
@@ -646,23 +971,13 @@ class GGUFpadWindow(Gtk.ApplicationWindow):
         self.chat_messages_box.show_all()
         self._scroll_to_bottom()
 
-        # Auto-start llama-server if a model is loaded and server is not running
-        if self.current_model_path:
-            if not self.engine.is_running or self.engine.loaded_model_path != self.current_model_path:
-                ngl = int(self.gpu_layers_scale.get_value())
-                self.status_gpu_label.set_text("GPU: Initializing CUDA inference server...")
-                started = self.engine.start_llama_server(
-                    model_path=self.current_model_path,
-                    n_gpu_layers=ngl,
-                    port=8080,
-                )
-                if started:
-                    # Give server a brief moment to bind port
-                    time.sleep(1.2)
-                    self.status_gpu_label.set_text("GPU: Active (RTX 3060 CUDA)")
-
+        ngl = int(self.gpu_layers_scale.get_value())
+        history_snapshot = list(self.chat_history)
         token_count = [0]
         response_text = []
+
+        def on_status(status_msg):
+            GLib.idle_add(self.status_gpu_label.set_text, status_msg)
 
         def on_token(token):
             response_text.append(token)
@@ -671,16 +986,17 @@ class GGUFpadWindow(Gtk.ApplicationWindow):
             GLib.idle_add(self.status_tokens_label.set_text, f"Tokens: {token_count[0]}")
             GLib.idle_add(self._scroll_to_bottom)
 
-        def on_done():
+        def on_done(full_reply):
+            self.chat_history.append({"role": "user", "content": text})
+            self.chat_history.append({"role": "assistant", "content": full_reply})
             GLib.idle_add(self._scroll_to_bottom)
 
         def on_error(err):
             msg = (
                 f"{err}\n\n"
                 f"ℹ️ **Inference Setup**:\n"
-                f"To stream completions directly, run:\n"
-                f"   `llama-server -m <model>.gguf -ngl {int(self.gpu_layers_scale.get_value())} --port 8080`\n"
-                f"or connect with Ollama / any OpenAI-compatible GGUF endpoint."
+                f"Select a `.gguf` model from the **Model Files Browser** on the left (or click **Open**),\n"
+                f"and GGUFpad will automatically launch `llama-server` on your RTX 3060."
             )
             GLib.idle_add(content_label.set_text, msg)
             GLib.idle_add(self._scroll_to_bottom)
@@ -688,13 +1004,18 @@ class GGUFpadWindow(Gtk.ApplicationWindow):
         self.engine.stream_completion(
             prompt=text,
             system_prompt=sys_prompt,
-            temperature=temp,
+            history=history_snapshot,
+            temperature=0.7,
+            model_path=self.current_model_path,
+            n_gpu_layers=ngl,
+            on_status=on_status,
             on_token=on_token,
             on_done=on_done,
             on_error=on_error,
         )
 
     def clear_chat(self):
+        self.chat_history.clear()
         for child in self.chat_messages_box.get_children():
             self.chat_messages_box.remove(child)
         self.status_tokens_label.set_text("Tokens: 0")
