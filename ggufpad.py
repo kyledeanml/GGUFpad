@@ -646,6 +646,21 @@ class GGUFpadWindow(Gtk.ApplicationWindow):
         self.chat_messages_box.show_all()
         self._scroll_to_bottom()
 
+        # Auto-start llama-server if a model is loaded and server is not running
+        if self.current_model_path:
+            if not self.engine.is_running or self.engine.loaded_model_path != self.current_model_path:
+                ngl = int(self.gpu_layers_scale.get_value())
+                self.status_gpu_label.set_text("GPU: Initializing CUDA inference server...")
+                started = self.engine.start_llama_server(
+                    model_path=self.current_model_path,
+                    n_gpu_layers=ngl,
+                    port=8080,
+                )
+                if started:
+                    # Give server a brief moment to bind port
+                    time.sleep(1.2)
+                    self.status_gpu_label.set_text("GPU: Active (RTX 3060 CUDA)")
+
         token_count = [0]
         response_text = []
 

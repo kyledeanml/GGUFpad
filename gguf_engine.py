@@ -70,10 +70,17 @@ class GGUFEngine:
         # Check for llama-server binary
         binary = "llama-server"
         found = False
-        for p in os.environ.get("PATH", "").split(os.path.pathsep):
+        paths_to_check = [
+            os.path.expanduser("~/.local/bin"),
+            "/usr/local/bin",
+            "/usr/bin",
+        ] + os.environ.get("PATH", "").split(os.path.pathsep)
+
+        for p in paths_to_check:
             cand = os.path.join(p, binary)
             if os.path.isfile(cand) and os.access(cand, os.X_OK):
                 found = True
+                binary = cand
                 break
 
         if not found:
