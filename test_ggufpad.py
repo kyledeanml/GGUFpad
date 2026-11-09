@@ -32,6 +32,7 @@ from gguf_parser import (
 )
 from gguf_engine import GGUFEngine
 from gguf_context import ContextFileLoader, SUPPORTED_CONTEXT_CATEGORIES
+import ggufpad
 
 
 class TestGGUFpadIntegrity(unittest.TestCase):

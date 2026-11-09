@@ -13,6 +13,7 @@ import threading
 import json
 import time
 import cairo
+from typing import Optional, List, Dict, Any, Tuple
 
 sys.dont_write_bytecode = True
 import gi
