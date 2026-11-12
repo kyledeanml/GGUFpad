@@ -29,25 +29,25 @@ Styled after **PythonPanel** with a sleek dark neon theme (`#0b0f19`), GGUFpanel
 ```bash
 git clone https://github.com/kyledeanml/GGUFpanel.git
 cd GGUFpanel
-chmod +x run.sh ggufpanel.py
-
-# Install desktop shortcut & icon
-mkdir -p ~/.local/share/applications ~/.local/share/icons/hicolor/scalable/apps
-cp ggufpanel.svg ~/.local/share/icons/hicolor/scalable/apps/
-cp ggufpanel.desktop ~/.local/share/applications/
-update-desktop-database ~/.local/share/applications/ 2>/dev/null || true
+./install.sh
 ```
+
+The installer automatically:
+- Installs the vector icon (`ggufpanel.svg`) and multi-size panel icon set (`16x16` through `512x512`) into `~/.local/share/icons/hicolor/`.
+- Installs the desktop launcher (`~/.local/share/applications/ggufpanel.desktop`) with `StartupWMClass=ggufpanel`.
+- Creates the CLI executable symlink at `~/.local/bin/ggufpanel`.
+- Adds GGUFpanel to your Cinnamon Menu favorites.
 
 ## Running GGUFpanel
 
 ```bash
-./run.sh
+ggufpanel
 ```
 
-Or pass a GGUF file directly:
+Or pass a GGUF model directly:
 
 ```bash
-./run.sh /path/to/model.gguf
+ggufpanel /path/to/model.gguf
 ```
 
 ## License

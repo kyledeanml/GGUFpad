@@ -2,8 +2,8 @@
 Name=GGUFpanel
 Comment=GGUF model inspector, multi-format model browser, and local LLM studio for Linux Mint
 GenericName=GGUF LLM Studio
-Exec=/home/bluechile/ggufpanel/run.sh %F
-Icon=/home/bluechile/.local/share/icons/hicolor/scalable/apps/ggufpanel.svg
+Exec=run.sh %F
+Icon=ggufpanel
 Terminal=false
 Type=Application
 Categories=GTK;GNOME;Development;Utility;
@@ -15,4 +15,4 @@ Actions=NewWindow;
 
 [Desktop Action NewWindow]
 Name=Open a New Window
-Exec=/home/bluechile/ggufpanel/run.sh
+Exec=run.sh

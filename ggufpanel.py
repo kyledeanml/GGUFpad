@@ -1251,7 +1251,7 @@ class GGUFpanelWindow(Gtk.ApplicationWindow):
 class GGUFpanelApp(Gtk.Application):
     def __init__(self):
         super().__init__(
-            application_id="org.bluechile.ggufpanel",
+            application_id="org.linuxmint.ggufpanel",
             flags=Gio.ApplicationFlags.HANDLES_OPEN | Gio.ApplicationFlags.NON_UNIQUE
         )
         self.window = None
@@ -1272,6 +1272,8 @@ class GGUFpanelApp(Gtk.Application):
 
 
 def main():
+    GLib.set_prgname("ggufpanel")
+    GLib.set_application_name("GGUFpanel")
     app = GGUFpanelApp()
     return app.run(sys.argv)
 

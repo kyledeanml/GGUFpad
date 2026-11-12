@@ -77,7 +77,27 @@ if command -v gtk-update-icon-cache >/dev/null 2>&1; then
     gtk-update-icon-cache -f -t "$HOME/.local/share/icons/hicolor" 2>/dev/null || true
 fi
 
+if command -v gsettings >/dev/null 2>&1; then
+    python3 -B -c "
+import gi
+from gi.repository import Gio
+try:
+    settings = Gio.Settings.new('org.cinnamon')
+    favs = [x for x in settings.get_strv('favorite-apps') if x != 'ggufpad.desktop']
+    if 'ggufpanel.desktop' not in favs:
+        favs.append('ggufpanel.desktop')
+    settings.set_strv('favorite-apps', favs)
+    print('[+] Added GGUFpanel to Cinnamon favorite apps')
+except Exception:
+    pass
+" || true
+fi
+
 echo ""
 echo "=========================================================="
 echo " GGUFpanel Installation Complete!"
+echo "=========================================================="
+echo "You can launch GGUFpanel anytime from your Cinnamon Menu"
+echo "or from terminal by typing:"
+echo "  ggufpanel"
 echo "=========================================================="
