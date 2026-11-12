@@ -1,5 +1,5 @@
 """
-GGUFpad Multi-Format Context File Loader
+GGUFpanel Multi-Format Context File Loader
 Extracts structured text, code, tables, document contents, and multimodal image payloads
 from various file types to inject into LLM conversation context.
 """
@@ -40,7 +40,7 @@ SUPPORTED_CONTEXT_CATEGORIES = [
 
 @dataclass
 class ContextAttachment:
-    """Represents a file loaded into GGUFpad's active conversation context."""
+    """Represents a file loaded into GGUFpanel's active conversation context."""
     file_path: str
     filename: str
     file_type: str  # e.g. 'PDF', 'PYTHON', 'CSV', 'DOCX', 'IMAGE', 'TEXT'

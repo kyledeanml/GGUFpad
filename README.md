@@ -1,11 +1,11 @@
----------------------------------------------![GGUFpad](ggufpad.svg)
+-----------------------------------------------------![GGUFpanel](ggufpanel.svg)
 
 
-# GGUFpad
+# GGUFpanel
 
 A hardware-accelerated GGUF model inspector, parameter tuner, and local LLM studio designed for Linux Mint Cinnamon.
 
-Styled after **PythonPad** with a sleek dark neon theme (`#0b0f19`), GGUFpad enables instant model inspection, GPU layer offloading controls, and real-time streaming chat.
+Styled after **PythonPanel** with a sleek dark neon theme (`#0b0f19`), GGUFpanel enables instant model inspection, GPU layer offloading controls, and real-time streaming chat.
 
 
 ## Features
@@ -18,7 +18,7 @@ Styled after **PythonPad** with a sleek dark neon theme (`#0b0f19`), GGUFpad ena
   - Auto-detects NVIDIA GPUs (e.g. GeForce RTX 3060 12GB VRAM) via PyTorch/CUDA.
   - Interactive slider for `-ngl` (number of GPU layers offloaded).
   - Temperature, context length, and sampling configuration.
-- **PythonPad Aesthetic**:
+- **PythonPanel Aesthetic**:
   - Dark neon `#0b0f19` theme with cyan borders and highlights.
   - Linked HeaderBar controls (`Open`, `Clear Session`, `Inspector Toggle`).
   - Real-time status bar showing active model format, GPU readiness, and token counts.
@@ -27,18 +27,18 @@ Styled after **PythonPad** with a sleek dark neon theme (`#0b0f19`), GGUFpad ena
 ## Installation
 
 ```bash
-git clone https://github.com/kyledeanml/GGUFpad.git
-cd GGUFpad
-chmod +x run.sh ggufpad.py
+git clone https://github.com/kyledeanml/GGUFpanel.git
+cd GGUFpanel
+chmod +x run.sh ggufpanel.py
 
 # Install desktop shortcut & icon
 mkdir -p ~/.local/share/applications ~/.local/share/icons/hicolor/scalable/apps
-cp ggufpad.svg ~/.local/share/icons/hicolor/scalable/apps/
-cp ggufpad.desktop ~/.local/share/applications/
+cp ggufpanel.svg ~/.local/share/icons/hicolor/scalable/apps/
+cp ggufpanel.desktop ~/.local/share/applications/
 update-desktop-database ~/.local/share/applications/ 2>/dev/null || true
 ```
 
-## Running GGUFpad
+## Running GGUFpanel
 
 ```bash
 ./run.sh

@@ -1,18 +1,18 @@
 [Desktop Entry]
-Name=GGUFpad
+Name=GGUFpanel
 Comment=GGUF model inspector, multi-format model browser, and local LLM studio for Linux Mint
 GenericName=GGUF LLM Studio
-Exec=/home/bluechile/ggufpad/run.sh %F
-Icon=/home/bluechile/.local/share/icons/hicolor/scalable/apps/ggufpad.svg
+Exec=/home/bluechile/ggufpanel/run.sh %F
+Icon=/home/bluechile/.local/share/icons/hicolor/scalable/apps/ggufpanel.svg
 Terminal=false
 Type=Application
 Categories=GTK;GNOME;Development;Utility;
 MimeType=application/octet-stream;application/x-gguf;
 StartupNotify=true
-StartupWMClass=ggufpad
+StartupWMClass=ggufpanel
 Keywords=gguf;llm;ai;chat;llama;model;inspector;cuda;gpu;studio;
 Actions=NewWindow;
 
 [Desktop Action NewWindow]
 Name=Open a New Window
-Exec=/home/bluechile/ggufpad/run.sh
+Exec=/home/bluechile/ggufpanel/run.sh

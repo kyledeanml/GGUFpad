@@ -53,7 +53,7 @@
     </filter>
   </defs>
 
-  <!-- ==================== 1. PERSPECTIVE YOGA PAD (PYTHONPAD STYLE) ==================== -->
+  <!-- ==================== 1. PERSPECTIVE YOGA PAD (PYTHONPANEL STYLE) ==================== -->
   <g transform="translate(26, 75) scale(1.28)">
     <!-- Floor Shadow beneath the pad -->
     <path d="M 48 258 L 288 258 L 328 214 L 92 214 Z"

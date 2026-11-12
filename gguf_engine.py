@@ -1,5 +1,5 @@
 """
-GGUFpad LLM Inference Engine & Runner
+GGUFpanel LLM Inference Engine & Runner
 Supports:
 1. Automatic llama-server launch with GPU offloading (--n-gpu-layers) & health-check polling
 2. Native llama-cpp-python (if installed)

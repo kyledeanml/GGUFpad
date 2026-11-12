@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Integrity & Unit Test Suite for GGUFpad
+Integrity & Unit Test Suite for GGUFpanel
 Validates:
 1. GGUF v3 binary header + tensor table parsing & exact parameter calculation
 2. Multi-format model inspection (.safetensors, .pt, .bin, .onnx)
@@ -32,10 +32,10 @@ from gguf_parser import (
 )
 from gguf_engine import GGUFEngine
 from gguf_context import ContextFileLoader, SUPPORTED_CONTEXT_CATEGORIES
-import ggufpad
+import ggufpanel
 
 
-class TestGGUFpadIntegrity(unittest.TestCase):
+class TestGGUFpanelIntegrity(unittest.TestCase):
     def test_gguf_binary_and_tensor_parsing(self):
         """Verify GGUF header parsing and exact tensor dimension parameter counting."""
         with tempfile.NamedTemporaryFile(suffix="-8B.gguf", delete=False) as tf:
@@ -133,8 +133,8 @@ class TestGGUFpadIntegrity(unittest.TestCase):
         self.assertTrue(os.path.exists(server_bin))
 
     def test_svg_and_watermark_integrity(self):
-        """Verify ggufpad.svg loads cleanly via GdkPixbuf and contains no GeForce branding."""
-        svg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ggufpad.svg")
+        """Verify ggufpanel.svg loads cleanly via GdkPixbuf and contains no GeForce branding."""
+        svg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ggufpanel.svg")
         self.assertTrue(os.path.isfile(svg_path))
         with open(svg_path, "r", encoding="utf-8") as f:
             svg_content = f.read()
@@ -145,7 +145,7 @@ class TestGGUFpadIntegrity(unittest.TestCase):
 
     def test_ui_temperature_removed_and_model_browser_present(self):
         """Verify temperature slider is removed, model file browser and context file loader exist."""
-        ui_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ggufpad.py")
+        ui_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ggufpanel.py")
         with open(ui_path, "r", encoding="utf-8") as f:
             ui_code = f.read()
         self.assertNotIn("self.temp_scale", ui_code)
@@ -195,12 +195,12 @@ class TestGGUFpadIntegrity(unittest.TestCase):
                     "word/document.xml",
                     '<?xml version="1.0"?>'
                     '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
-                    '<w:body><w:p><w:r><w:t>Hello from GGUFpad DOCX context!</w:t></w:r></w:p></w:body>'
+                    '<w:body><w:p><w:r><w:t>Hello from GGUFpanel DOCX context!</w:t></w:r></w:p></w:body>'
                     '</w:document>',
                 )
             att = ContextFileLoader.load_file(docx_path)
             self.assertEqual(att.file_type, "DOCX")
-            self.assertIn("Hello from GGUFpad DOCX context!", att.extracted_text)
+            self.assertIn("Hello from GGUFpanel DOCX context!", att.extracted_text)
         finally:
             os.remove(docx_path)
 

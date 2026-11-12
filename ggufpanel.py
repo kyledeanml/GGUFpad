@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-GGUFpad - Local GGUF LLM Studio & Workstation
-Styled after PythonPad: dark neon theme (#0b0f19), headerbar with linked controls,
+GGUFpanel - Local GGUF LLM Studio & Workstation
+Styled after PythonPanel: dark neon theme (#0b0f19), headerbar with linked controls,
 multi-format model file browser, sidebar inspector, interactive prompt/inference console,
 and bottom statusbar.
 Designed for Linux Mint Cinnamon.
@@ -29,10 +29,10 @@ from gguf_engine import GGUFEngine
 from gguf_context import ContextFileLoader, ContextAttachment, SUPPORTED_CONTEXT_CATEGORIES
 
 
-class GGUFpadWindow(Gtk.ApplicationWindow):
-    """Main window for GGUFpad, matching PythonPad's aesthetics and controls."""
+class GGUFpanelWindow(Gtk.ApplicationWindow):
+    """Main window for GGUFpanel, matching PythonPanel's aesthetics and controls."""
 
-    APP_NAME = "GGUFpad"
+    APP_NAME = "GGUFpanel"
     APP_VERSION = "2.1"
 
     def __init__(self, app, initial_file=None):
@@ -41,8 +41,8 @@ class GGUFpadWindow(Gtk.ApplicationWindow):
         self.set_position(Gtk.WindowPosition.CENTER)
 
         # Set WM Class and Icons
-        self.set_wmclass("ggufpad", "GGUFpad")
-        icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ggufpad.svg")
+        self.set_wmclass("ggufpanel", "GGUFpanel")
+        icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ggufpanel.svg")
         if os.path.exists(icon_path):
             try:
                 Gtk.Window.set_default_icon_from_file(icon_path)
@@ -106,9 +106,9 @@ class GGUFpadWindow(Gtk.ApplicationWindow):
         accel.connect(key_l, mod_l, Gtk.AccelFlags.VISIBLE, lambda *a: self.on_load_context_files())
 
     def _apply_dark_neon_theme(self):
-        """PythonPad dark neon theme (#0b0f19) with cyan/neon accents."""
+        """PythonPanel dark neon theme (#0b0f19) with cyan/neon accents."""
         css = b"""
-        /* GGUFpad PythonPad-Style Dark Neon Theme */
+        /* GGUFpanel PythonPanel-Style Dark Neon Theme */
         window, dialog, .background {
             background-color: #0b0f19;
             color: #ffffff;
@@ -539,7 +539,7 @@ class GGUFpadWindow(Gtk.ApplicationWindow):
 
         # Welcome Card
         self._add_system_message(
-            "Welcome to **GGUFpad**.\n\n"
+            "Welcome to **GGUFpanel**.\n\n"
             "• Click any model in the **Model Files Browser** on the left (or click **Model Files / Open**) to load `.gguf`, `.safetensors`, `.pt`, `.bin`, or `.onnx` files.\n"
             "• Click **Load File / Load Context (Ctrl+L)** to attach documents (`.pdf`, `.docx`, `.odt`), code (`.py`, `.js`, `.cpp`, `.ipynb`), data (`.csv`, `.xlsx`, `.json`, `.yaml`), or images into context.\n"
             "• Hardware acceleration is connected to your **NVIDIA GeForce RTX 3060 (12GB VRAM)**.\n"
@@ -781,7 +781,7 @@ class GGUFpadWindow(Gtk.ApplicationWindow):
         content.pack_start(scroll, True, True, 0)
 
         hint_lbl = Gtk.Label(
-            label="Double-click any model file to inspect & load it into GGUFpad.",
+            label="Double-click any model file to inspect & load it into GGUFpanel.",
             xalign=0,
         )
         hint_lbl.get_style_context().add_class("chat-meta")
@@ -792,10 +792,10 @@ class GGUFpadWindow(Gtk.ApplicationWindow):
         dialog.destroy()
 
     def _get_watermark_pixbuf(self, target_size=360):
-        """Load and cache the official GGUFpad SVG logo (GPU floating on yoga pad)."""
+        """Load and cache the official GGUFpanel SVG logo (GPU floating on yoga pad)."""
         if not self._watermark_loaded:
             self._watermark_loaded = True
-            svg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ggufpad.svg")
+            svg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ggufpanel.svg")
             if os.path.exists(svg_path):
                 try:
                     self._watermark_pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_scale(
@@ -806,7 +806,7 @@ class GGUFpadWindow(Gtk.ApplicationWindow):
         return self._watermark_pixbuf
 
     def _on_draw_chat_watermark(self, widget, cr):
-        """Render the translucent GGUFpad floating-GPU yoga pad watermark in the chat canvas background."""
+        """Render the translucent GGUFpanel floating-GPU yoga pad watermark in the chat canvas background."""
         pixbuf = self._get_watermark_pixbuf(360)
         if pixbuf is None:
             return False
@@ -976,7 +976,7 @@ class GGUFpadWindow(Gtk.ApplicationWindow):
         bubble = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         bubble.get_style_context().add_class("chat-bubble-assistant")
 
-        meta = Gtk.Label(label="GGUFpad System", xalign=0)
+        meta = Gtk.Label(label="GGUFpanel System", xalign=0)
         meta.get_style_context().add_class("chat-meta")
 
         content = Gtk.Label(label=text, xalign=0)
@@ -1216,7 +1216,7 @@ class GGUFpadWindow(Gtk.ApplicationWindow):
                 f"{err}\n\n"
                 f"ℹ️ **Inference Setup**:\n"
                 f"Select a `.gguf` model from the **Model Files Browser** on the left (or click **Open**),\n"
-                f"and GGUFpad will automatically launch `llama-server` on your RTX 3060."
+                f"and GGUFpanel will automatically launch `llama-server` on your RTX 3060."
             )
             GLib.idle_add(content_label.set_text, msg)
             GLib.idle_add(self._scroll_to_bottom)
@@ -1248,22 +1248,22 @@ class GGUFpadWindow(Gtk.ApplicationWindow):
         adj.set_value(adj.get_upper() - adj.get_page_size())
 
 
-class GGUFpadApp(Gtk.Application):
+class GGUFpanelApp(Gtk.Application):
     def __init__(self):
         super().__init__(
-            application_id="org.bluechile.ggufpad",
+            application_id="org.bluechile.ggufpanel",
             flags=Gio.ApplicationFlags.HANDLES_OPEN | Gio.ApplicationFlags.NON_UNIQUE
         )
         self.window = None
 
     def do_activate(self):
         if not self.window:
-            self.window = GGUFpadWindow(self)
+            self.window = GGUFpanelWindow(self)
         self.window.present()
 
     def do_open(self, files, hint):
         if not self.window:
-            self.window = GGUFpadWindow(self)
+            self.window = GGUFpanelWindow(self)
         if files:
             path = files[0].get_path()
             if path and os.path.isfile(path):
@@ -1272,7 +1272,7 @@ class GGUFpadApp(Gtk.Application):
 
 
 def main():
-    app = GGUFpadApp()
+    app = GGUFpanelApp()
     return app.run(sys.argv)
 
 
