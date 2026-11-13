@@ -9,10 +9,14 @@ Designed for Linux Mint Cinnamon.
 
 import sys
 import os
+import shutil
 import threading
+import subprocess
+import urllib.request
 import json
 import time
 import cairo
+from datetime import datetime
 from typing import Optional, List, Dict, Any, Tuple
 
 sys.dont_write_bytecode = True
@@ -27,6 +31,12 @@ from gi.repository import Gtk, Gdk, GdkPixbuf, Pango, GLib, Gio
 from gguf_parser import GGUFReader, SUPPORTED_MODEL_EXTENSIONS
 from gguf_engine import GGUFEngine
 from gguf_context import ContextFileLoader, ContextAttachment, SUPPORTED_CONTEXT_CATEGORIES
+from gguf_image_profiles import (
+    IMAGE_PROFILES,
+    RECOMMENDED_T2I_MODELS,
+    COMPONENT_LABELS,
+    auto_discover_components,
+)
 
 
 class GGUFpanelWindow(Gtk.ApplicationWindow):
@@ -64,15 +74,22 @@ class GGUFpanelWindow(Gtk.ApplicationWindow):
         self.engine = GGUFEngine()
         self.current_reader = None
         self.current_model_path = None
+        self.app_mode = "llm"  # "llm" or "image"
+        self.active_image_profile = "z-image-turbo"
+        self.image_components: Dict[str, str] = {}
         self.chat_history = []
         self.context_attachments = []
         self._watermark_pixbuf = None
         self._watermark_loaded = False
+        self._mode_updating = False
 
         default_models_dir = os.path.expanduser("~/Documents/models")
         if not os.path.isdir(default_models_dir):
             default_models_dir = os.path.expanduser("~/Documents")
         self.models_directory = default_models_dir
+
+        default_out_dir = os.path.expanduser("~/Pictures/GGUFpanel")
+        self.output_directory = default_out_dir
 
         self._apply_dark_neon_theme()
         self._build_header_bar()
@@ -90,9 +107,10 @@ class GGUFpanelWindow(Gtk.ApplicationWindow):
 
         self.show_all()
         self._refresh_context_tray()
+        self._update_mode_ui()
 
     def _on_delete_event(self, widget, event):
-        self.engine.stop_server()
+        self.engine.stop_all()
         return False
 
     def _setup_shortcuts(self):
@@ -286,6 +304,44 @@ class GGUFpanelWindow(Gtk.ApplicationWindow):
             font-weight: bold;
         }
 
+        .image-preview-frame {
+            background-color: #070a14;
+            border: 1px solid rgba(0, 240, 255, 0.45);
+            border-radius: 6px;
+            padding: 6px;
+        }
+
+        .badge-ok {
+            background-color: #0b291b;
+            color: #4ade80;
+            border: 1px solid #16a34a;
+            border-radius: 3px;
+            padding: 1px 6px;
+            font-size: 10px;
+            font-weight: bold;
+        }
+
+        .badge-warn {
+            background-color: #2b1d0b;
+            color: #fbbf24;
+            border: 1px solid #d97706;
+            border-radius: 3px;
+            padding: 1px 6px;
+            font-size: 10px;
+            font-weight: bold;
+        }
+
+        progressbar trough {
+            background-color: #070a14;
+            border: 1px solid rgba(0, 240, 255, 0.3);
+            border-radius: 4px;
+            min-height: 10px;
+        }
+        progressbar progress {
+            background: linear-gradient(to right, #0284c7, #00f0ff);
+            border-radius: 4px;
+        }
+
         scrollbar {
             background-color: #070a14;
         }
@@ -355,6 +411,29 @@ class GGUFpanelWindow(Gtk.ApplicationWindow):
         btn_box.pack_start(self.btn_clear, False, False, 0)
 
         self.header.pack_start(btn_box)
+
+        # Mode Switcher: LLM Chat vs Text-to-Image Generation
+        mode_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
+        Gtk.StyleContext.add_class(mode_box.get_style_context(), "linked")
+
+        self.btn_mode_llm = Gtk.ToggleButton(label="💬 LLM Chat")
+        self.btn_mode_llm.set_active(True)
+        self.btn_mode_llm.set_tooltip_text("Switch to Local LLM Chat Mode (llama-server)")
+        self.btn_mode_llm.connect("toggled", self._on_mode_btn_toggled, "llm")
+        mode_box.pack_start(self.btn_mode_llm, False, False, 0)
+
+        self.btn_mode_image = Gtk.ToggleButton(label="🎨 Image Gen")
+        self.btn_mode_image.set_active(False)
+        self.btn_mode_image.set_tooltip_text("Switch to Text-to-Image GGUF Diffusion Mode (sd-cli)")
+        self.btn_mode_image.connect("toggled", self._on_mode_btn_toggled, "image")
+        mode_box.pack_start(self.btn_mode_image, False, False, 0)
+
+        self.btn_t2i_setup = Gtk.Button(label="⬇ T2I Models")
+        self.btn_t2i_setup.set_tooltip_text("Recommended GGUF Text-to-Image Models for RTX 3060 (12GB) & Model Downloader")
+        self.btn_t2i_setup.connect("clicked", lambda w: self.on_show_t2i_setup_dialog())
+        mode_box.pack_start(self.btn_t2i_setup, False, False, 0)
+
+        self.header.pack_start(mode_box)
 
         # GPU acceleration status badge
         gpu_info = self.engine.get_gpu_info()
@@ -472,10 +551,12 @@ class GGUFpanelWindow(Gtk.ApplicationWindow):
             self.meta_labels[key] = v_lbl
         sidebar_box.pack_start(self.meta_card, False, False, 0)
 
-        # 3. Hardware & Offload Tuning (Temperature slider removed)
+        # 3A. LLM Controls Box (visible in LLM Chat mode)
+        self.llm_controls_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+
         lbl_tuning = Gtk.Label(label="INFERENCE & GPU TUNING", xalign=0)
         lbl_tuning.get_style_context().add_class("section-header")
-        sidebar_box.pack_start(lbl_tuning, False, False, 0)
+        self.llm_controls_box.pack_start(lbl_tuning, False, False, 0)
 
         tune_card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         tune_card.get_style_context().add_class("meta-card")
@@ -491,12 +572,12 @@ class GGUFpanelWindow(Gtk.ApplicationWindow):
         tune_card.pack_start(self.gpu_layers_label, False, False, 0)
         tune_card.pack_start(self.gpu_layers_scale, False, False, 0)
 
-        sidebar_box.pack_start(tune_card, False, False, 0)
+        self.llm_controls_box.pack_start(tune_card, False, False, 0)
 
         # 4. System Role Template
         lbl_role = Gtk.Label(label="SYSTEM ROLE TEMPLATE", xalign=0)
         lbl_role.get_style_context().add_class("section-header")
-        sidebar_box.pack_start(lbl_role, False, False, 0)
+        self.llm_controls_box.pack_start(lbl_role, False, False, 0)
 
         self.sys_combo = Gtk.ComboBoxText()
         self.sys_templates = {
@@ -509,7 +590,7 @@ class GGUFpanelWindow(Gtk.ApplicationWindow):
             self.sys_combo.append_text(name)
         self.sys_combo.set_active(0)
         self.sys_combo.connect("changed", self._on_template_changed)
-        sidebar_box.pack_start(self.sys_combo, False, False, 0)
+        self.llm_controls_box.pack_start(self.sys_combo, False, False, 0)
 
         self.sys_prompt_entry = Gtk.TextView()
         self.sys_prompt_entry.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
@@ -517,7 +598,178 @@ class GGUFpanelWindow(Gtk.ApplicationWindow):
         sys_scroll = Gtk.ScrolledWindow()
         sys_scroll.set_min_content_height(65)
         sys_scroll.add(self.sys_prompt_entry)
-        sidebar_box.pack_start(sys_scroll, False, False, 0)
+        self.llm_controls_box.pack_start(sys_scroll, False, False, 0)
+
+        sidebar_box.pack_start(self.llm_controls_box, False, False, 0)
+
+        # 3B. Image Generation Controls Box (visible in Image Gen mode)
+        self.image_controls_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+
+        lbl_img_prof = Gtk.Label(label="IMAGE DIFFUSION PROFILE", xalign=0)
+        lbl_img_prof.get_style_context().add_class("section-header")
+        self.image_controls_box.pack_start(lbl_img_prof, False, False, 0)
+
+        prof_card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        prof_card.get_style_context().add_class("meta-card")
+
+        self.img_profile_combo = Gtk.ComboBoxText()
+        self._img_profile_ids = list(IMAGE_PROFILES.keys())
+        for pid in self._img_profile_ids:
+            self.img_profile_combo.append_text(IMAGE_PROFILES[pid].display_name)
+        self.img_profile_combo.set_active(0)
+        self.img_profile_combo.connect("changed", self._on_image_profile_changed)
+        prof_card.pack_start(self.img_profile_combo, False, False, 0)
+
+        self.img_vram_note_label = Gtk.Label(label="", xalign=0)
+        self.img_vram_note_label.set_line_wrap(True)
+        self.img_vram_note_label.get_style_context().add_class("chat-meta")
+        prof_card.pack_start(self.img_vram_note_label, False, False, 0)
+
+        self.image_controls_box.pack_start(prof_card, False, False, 0)
+
+        # Companion Files (VAE / Text Encoders)
+        comp_hdr_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        lbl_comp = Gtk.Label(label="COMPANION FILES (VAE / ENCODERS)", xalign=0)
+        lbl_comp.get_style_context().add_class("section-header")
+        comp_hdr_row.pack_start(lbl_comp, True, True, 0)
+
+        btn_autodetect = Gtk.Button(label="Auto-Detect")
+        btn_autodetect.set_tooltip_text("Scan models folder for matching VAE and text encoders")
+        btn_autodetect.connect("clicked", lambda _b: self._auto_discover_image_components(notify=True))
+        comp_hdr_row.pack_end(btn_autodetect, False, False, 0)
+        self.image_controls_box.pack_start(comp_hdr_row, False, False, 0)
+
+        self.comp_card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        self.comp_card.get_style_context().add_class("meta-card")
+        self.comp_rows: Dict[str, Dict[str, Any]] = {}
+        for comp_key, comp_title in COMPONENT_LABELS.items():
+            c_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+            top_r = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+            c_lbl = Gtk.Label(label=comp_title, xalign=0)
+            c_lbl.get_style_context().add_class("chat-meta")
+            top_r.pack_start(c_lbl, True, True, 0)
+
+            browse_btn = Gtk.Button(label="Browse")
+            browse_btn.connect("clicked", lambda _b, k=comp_key: self._on_browse_component(k))
+            top_r.pack_end(browse_btn, False, False, 0)
+
+            clr_btn = Gtk.Button(label="✕")
+            clr_btn.set_tooltip_text("Clear path")
+            clr_btn.connect("clicked", lambda _b, k=comp_key: self._set_component_path(k, ""))
+            top_r.pack_end(clr_btn, False, False, 0)
+
+            path_entry = Gtk.Entry()
+            path_entry.set_placeholder_text("Not set (auto-detected if present)")
+            path_entry.connect("changed", lambda e, k=comp_key: self._on_component_entry_changed(k, e))
+
+            c_box.pack_start(top_r, False, False, 0)
+            c_box.pack_start(path_entry, False, False, 0)
+            self.comp_card.pack_start(c_box, False, False, 0)
+            self.comp_rows[comp_key] = {"box": c_box, "entry": path_entry, "label": c_lbl}
+
+        self.image_controls_box.pack_start(self.comp_card, False, False, 0)
+
+        # Generation Parameters
+        lbl_gen = Gtk.Label(label="GENERATION PARAMETERS", xalign=0)
+        lbl_gen.get_style_context().add_class("section-header")
+        self.image_controls_box.pack_start(lbl_gen, False, False, 0)
+
+        gen_card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        gen_card.get_style_context().add_class("meta-card")
+
+        # Resolution presets
+        res_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        res_lbl = Gtk.Label(label="Size Preset:", xalign=0)
+        res_lbl.get_style_context().add_class("chat-meta")
+        self.img_res_combo = Gtk.ComboBoxText()
+        self._res_presets = [
+            ("1024 × 1024 (1:1)", 1024, 1024),
+            ("1024 × 768 (4:3)", 1024, 768),
+            ("768 × 1024 (3:4)", 768, 1024),
+            ("1280 × 720 (16:9)", 1280, 720),
+            ("720 × 1280 (9:16)", 720, 1280),
+            ("512 × 512 (Fast)", 512, 512),
+        ]
+        for r_label, _w, _h in self._res_presets:
+            self.img_res_combo.append_text(r_label)
+        self.img_res_combo.set_active(0)
+        self.img_res_combo.connect("changed", self._on_res_preset_changed)
+        res_row.pack_start(res_lbl, False, False, 0)
+        res_row.pack_start(self.img_res_combo, True, True, 0)
+        gen_card.pack_start(res_row, False, False, 0)
+
+        # Custom Width / Height
+        wh_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        self.img_width_spin = Gtk.SpinButton.new_with_range(256, 2048, 64)
+        self.img_width_spin.set_value(1024)
+        self.img_height_spin = Gtk.SpinButton.new_with_range(256, 2048, 64)
+        self.img_height_spin.set_value(1024)
+        wh_row.pack_start(Gtk.Label(label="W:"), False, False, 0)
+        wh_row.pack_start(self.img_width_spin, True, True, 0)
+        wh_row.pack_start(Gtk.Label(label="H:"), False, False, 0)
+        wh_row.pack_start(self.img_height_spin, True, True, 0)
+        gen_card.pack_start(wh_row, False, False, 0)
+
+        # Steps & CFG
+        sc_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        self.img_steps_spin = Gtk.SpinButton.new_with_range(1, 100, 1)
+        self.img_steps_spin.set_value(8)
+        self.img_cfg_spin = Gtk.SpinButton.new_with_range(0.0, 20.0, 0.5)
+        self.img_cfg_spin.set_digits(1)
+        self.img_cfg_spin.set_value(1.0)
+        sc_row.pack_start(Gtk.Label(label="Steps:"), False, False, 0)
+        sc_row.pack_start(self.img_steps_spin, True, True, 0)
+        sc_row.pack_start(Gtk.Label(label="CFG:"), False, False, 0)
+        sc_row.pack_start(self.img_cfg_spin, True, True, 0)
+        gen_card.pack_start(sc_row, False, False, 0)
+
+        # Sampler & Seed
+        ss_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        self.img_sampler_combo = Gtk.ComboBoxText()
+        self._samplers = ["euler", "euler_a", "heun", "dpm2", "dpm++2m", "dpm++2mv2", "dpm++2sa", "lcm"]
+        for smp in self._samplers:
+            self.img_sampler_combo.append_text(smp)
+        self.img_sampler_combo.set_active(0)
+        self.img_seed_spin = Gtk.SpinButton.new_with_range(-1, 2147483647, 1)
+        self.img_seed_spin.set_value(-1)
+        self.img_seed_spin.set_tooltip_text("-1 for random seed")
+        ss_row.pack_start(Gtk.Label(label="Sampler:"), False, False, 0)
+        ss_row.pack_start(self.img_sampler_combo, True, True, 0)
+        ss_row.pack_start(Gtk.Label(label="Seed:"), False, False, 0)
+        ss_row.pack_start(self.img_seed_spin, True, True, 0)
+        gen_card.pack_start(ss_row, False, False, 0)
+
+        # Negative Prompt
+        neg_lbl = Gtk.Label(label="Negative Prompt (optional):", xalign=0)
+        neg_lbl.get_style_context().add_class("chat-meta")
+        self.img_neg_entry = Gtk.Entry()
+        self.img_neg_entry.set_placeholder_text("blurry, low quality, distorted...")
+        gen_card.pack_start(neg_lbl, False, False, 0)
+        gen_card.pack_start(self.img_neg_entry, False, False, 0)
+
+        # RTX 3060 12GB VRAM Optimization Flags
+        self.chk_clip_on_cpu = Gtk.CheckButton(label="Offload Text Encoders to CPU (--backend te=cpu)")
+        self.chk_offload_cpu = Gtk.CheckButton(label="Offload Weights to CPU (--offload-to-cpu)")
+        self.chk_vae_tiling = Gtk.CheckButton(label="VAE Tiling (--vae-tiling)")
+        self.chk_flash_attn = Gtk.CheckButton(label="Flash Attention (--flash-attn on)")
+        self.chk_flash_attn.set_active(True)
+        for chk in (self.chk_clip_on_cpu, self.chk_offload_cpu, self.chk_vae_tiling, self.chk_flash_attn):
+            gen_card.pack_start(chk, False, False, 0)
+
+        # Output Folder Row
+        out_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        btn_out_dir = Gtk.Button(label="Output Folder...")
+        btn_out_dir.set_tooltip_text("Select folder where generated PNGs are saved")
+        btn_out_dir.connect("clicked", lambda _b: self._on_select_output_folder())
+        btn_open_out = Gtk.Button(label="Open")
+        btn_open_out.set_tooltip_text("Open generated images folder")
+        btn_open_out.connect("clicked", lambda _b: self._open_path_in_desktop(self.output_directory))
+        out_row.pack_start(btn_out_dir, True, True, 0)
+        out_row.pack_end(btn_open_out, False, False, 0)
+        gen_card.pack_start(out_row, False, False, 0)
+
+        self.image_controls_box.pack_start(gen_card, False, False, 0)
+        sidebar_box.pack_start(self.image_controls_box, False, False, 0)
 
         # Right Column: Chat Workspace
         workspace_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
@@ -541,7 +793,8 @@ class GGUFpanelWindow(Gtk.ApplicationWindow):
         self._add_system_message(
             "Welcome to **GGUFpanel**.\n\n"
             "• Click any model in the **Model Files Browser** on the left (or click **Model Files / Open**) to load `.gguf`, `.safetensors`, `.pt`, `.bin`, or `.onnx` files.\n"
-            "• Click **Load File / Load Context (Ctrl+L)** to attach documents (`.pdf`, `.docx`, `.odt`), code (`.py`, `.js`, `.cpp`, `.ipynb`), data (`.csv`, `.xlsx`, `.json`, `.yaml`), or images into context.\n"
+            "• **Text-to-Image (GGUF)**: Load a diffusion GGUF (e.g. **Z-Image-Turbo**, **FLUX.1-dev**, **Qwen-Image-2.1**, **SD 3.5**) or click **⬇ T2I Models** in the header to inspect & download RTX 3060-tuned GGUF image models.\n"
+            "• Click **Load File / Load Context (Ctrl+L)** to attach documents, code, data, or reference images.\n"
             "• Hardware acceleration is connected to your **NVIDIA GeForce RTX 3060 (12GB VRAM)**.\n"
             "• Type your prompt in the editor below and press **Enter** (or click Send)."
         )
@@ -929,7 +1182,9 @@ class GGUFpanelWindow(Gtk.ApplicationWindow):
             self.meta_labels["Arch"].set_text(summary["Architecture"])
             self.meta_labels["Params"].set_text(summary["Parameters"])
             self.meta_labels["Format"].set_text(summary["Quantization"])
-            self.meta_labels["Context"].set_text(str(summary["Context Length"]))
+            self.meta_labels["Context"].set_text(
+                "Diffusion" if self.current_reader.is_image_model else str(summary["Context Length"])
+            )
             self.meta_labels["Blocks"].set_text(str(summary["Layers (Blocks)"]))
             self.meta_labels["File Size"].set_text(summary["Size"])
 
@@ -940,35 +1195,70 @@ class GGUFpanelWindow(Gtk.ApplicationWindow):
 
             self.status_model_label.set_text(f"Model: {summary['Filename']} ({summary['Quantization']})")
 
-            self._add_system_message(
-                f"Loaded Model: **{summary['Filename']}**\n\n"
-                f"• **Architecture**: {summary['Architecture']}\n"
-                f"• **Parameters**: {summary['Parameters']}\n"
-                f"• **Format / Quantization**: {summary['Quantization']}\n"
-                f"• **Context Window**: {summary['Context Length']} tokens\n"
-                f"• **Transformer Blocks**: {blocks} (Configured for RTX 3060 offloading)"
-            )
+            if self.current_reader.is_image_model:
+                # Switch to Image Generation mode and configure profile + companions
+                self.engine.stop_server()
+                profile_id = self.current_reader.image_profile or "z-image-turbo"
+                self.set_mode("image")
+                self._select_image_profile(profile_id, apply_defaults=True)
+                found_comps = self._auto_discover_image_components(notify=False)
+                profile = IMAGE_PROFILES.get(self.active_image_profile)
+                req_keys = profile.required_components if profile else ()
+                missing = [COMPONENT_LABELS.get(k, k) for k in req_keys if not self.image_components.get(k)]
+                sd_cli = self.engine.find_sd_cli()
 
-            # Pre-warm llama-server in the background if this is a GGUF model
-            if self.current_reader.is_gguf:
-                ngl = int(self.gpu_layers_scale.get_value())
-                self.status_gpu_label.set_text("GPU: Loading model into RTX 3060 VRAM...")
+                comp_lines = []
+                for k in req_keys:
+                    val = self.image_components.get(k, "")
+                    status = f"`{os.path.basename(val)}`" if val else "⚠️ Missing (set in sidebar or click ⬇ T2I Models)"
+                    comp_lines.append(f"  - **{COMPONENT_LABELS.get(k, k)}**: {status}")
+                comp_summary = "\n".join(comp_lines) if comp_lines else "  - Self-contained checkpoint (no external encoders required)"
 
-                def bg_warm():
-                    started = self.engine.start_llama_server(
-                        model_path=file_path,
-                        n_gpu_layers=ngl,
-                        port=8080,
-                        on_ready=lambda: GLib.idle_add(
-                            self.status_gpu_label.set_text, "GPU: Ready & Loaded (RTX 3060 CUDA)"
-                        ),
-                    )
-                    if started and self.engine.wait_until_ready(timeout=60.0):
-                        GLib.idle_add(
-                            self.status_gpu_label.set_text, "GPU: Ready & Loaded (RTX 3060 CUDA)"
+                sd_status = f"`{sd_cli}`" if sd_cli else "⚠️ `sd-cli` not found"
+                self.status_gpu_label.set_text(
+                    f"GPU: Image Gen Ready ({profile.display_name if profile else profile_id})"
+                    if not missing and sd_cli
+                    else "GPU: Image Model Loaded (Check Companion Files)"
+                )
+                self._add_system_message(
+                    f"Loaded Text-to-Image Model: **{summary['Filename']}**\n\n"
+                    f"• **Detected Profile**: {profile.display_name if profile else profile_id}\n"
+                    f"• **Parameters**: {summary['Parameters']}  |  **Quantization**: {summary['Quantization']}\n"
+                    f"• **Backend (`sd-cli`)**: {sd_status}\n"
+                    f"• **Companion Files**:\n{comp_summary}\n\n"
+                    f"Type an image prompt below and press **Enter** to generate!"
+                )
+            else:
+                self.set_mode("llm")
+                self._add_system_message(
+                    f"Loaded Model: **{summary['Filename']}**\n\n"
+                    f"• **Architecture**: {summary['Architecture']}\n"
+                    f"• **Parameters**: {summary['Parameters']}\n"
+                    f"• **Format / Quantization**: {summary['Quantization']}\n"
+                    f"• **Context Window**: {summary['Context Length']} tokens\n"
+                    f"• **Transformer Blocks**: {blocks} (Configured for RTX 3060 offloading)"
+                )
+
+                # Pre-warm llama-server in the background if this is an LLM GGUF model
+                if self.current_reader.is_gguf:
+                    ngl = int(self.gpu_layers_scale.get_value())
+                    self.status_gpu_label.set_text("GPU: Loading model into RTX 3060 VRAM...")
+
+                    def bg_warm():
+                        started = self.engine.start_llama_server(
+                            model_path=file_path,
+                            n_gpu_layers=ngl,
+                            port=8080,
+                            on_ready=lambda: GLib.idle_add(
+                                self.status_gpu_label.set_text, "GPU: Ready & Loaded (RTX 3060 CUDA)"
+                            ),
                         )
+                        if started and self.engine.wait_until_ready(timeout=60.0):
+                            GLib.idle_add(
+                                self.status_gpu_label.set_text, "GPU: Ready & Loaded (RTX 3060 CUDA)"
+                            )
 
-                threading.Thread(target=bg_warm, daemon=True).start()
+                    threading.Thread(target=bg_warm, daemon=True).start()
         except Exception as e:
             self._add_system_message(f"⚠️ Error reading model file: {str(e)}")
 
@@ -1144,6 +1434,409 @@ class GGUFpanelWindow(Gtk.ApplicationWindow):
         dialog.run()
         dialog.destroy()
 
+    def _on_mode_btn_toggled(self, btn, mode_name: str):
+        if self._mode_updating:
+            return
+        if btn.get_active():
+            self.set_mode(mode_name)
+        else:
+            # Prevent both toggle buttons from being inactive at once
+            if self.app_mode == mode_name:
+                self._mode_updating = True
+                btn.set_active(True)
+                self._mode_updating = False
+
+    def set_mode(self, mode_name: str):
+        if mode_name not in ("llm", "image"):
+            return
+        self.app_mode = mode_name
+        self._mode_updating = True
+        self.btn_mode_llm.set_active(mode_name == "llm")
+        self.btn_mode_image.set_active(mode_name == "image")
+        self._mode_updating = False
+        self._update_mode_ui()
+
+    def _update_mode_ui(self):
+        is_img = self.app_mode == "image"
+        if is_img:
+            self.llm_controls_box.hide()
+            self.image_controls_box.show()
+            self.header.set_subtitle("GGUF Diffusion Studio • Text-to-Image (RTX 3060)")
+            self.btn_send.set_tooltip_text("Generate Image (Enter)")
+            self.status_tokens_label.set_text(f"Out: {os.path.basename(self.output_directory)}")
+            self._update_component_visibility()
+        else:
+            self.image_controls_box.hide()
+            self.llm_controls_box.show()
+            self.header.set_subtitle("GGUF Studio & Multimodal Inference")
+            self.btn_send.set_tooltip_text("Send Prompt (Enter)")
+            self.status_tokens_label.set_text("Tokens: 0")
+
+    def _select_image_profile(self, profile_id: str, apply_defaults: bool = True):
+        if profile_id not in IMAGE_PROFILES:
+            profile_id = "z-image-turbo"
+        self.active_image_profile = profile_id
+        if profile_id in self._img_profile_ids:
+            idx = self._img_profile_ids.index(profile_id)
+            self._mode_updating = True
+            self.img_profile_combo.set_active(idx)
+            self._mode_updating = False
+
+        prof = IMAGE_PROFILES[profile_id]
+        self.img_vram_note_label.set_text(prof.vram_note)
+        if apply_defaults:
+            self.img_width_spin.set_value(prof.default_width)
+            self.img_height_spin.set_value(prof.default_height)
+            self.img_steps_spin.set_value(prof.default_steps)
+            self.img_cfg_spin.set_value(prof.default_cfg)
+            if prof.default_sampler in self._samplers:
+                self.img_sampler_combo.set_active(self._samplers.index(prof.default_sampler))
+            self.chk_clip_on_cpu.set_active(prof.default_clip_on_cpu)
+            self.chk_offload_cpu.set_active(prof.default_offload_to_cpu)
+            self.chk_vae_tiling.set_active(prof.default_vae_tiling)
+            self.chk_flash_attn.set_active(prof.default_flash_attn)
+        self._update_component_visibility()
+
+    def _on_image_profile_changed(self, combo):
+        if self._mode_updating:
+            return
+        idx = combo.get_active()
+        if 0 <= idx < len(self._img_profile_ids):
+            pid = self._img_profile_ids[idx]
+            self._select_image_profile(pid, apply_defaults=True)
+            self._auto_discover_image_components(notify=False)
+
+    def _update_component_visibility(self):
+        prof = IMAGE_PROFILES.get(self.active_image_profile)
+        if not prof:
+            return
+        relevant = set(prof.required_components) | set(prof.optional_components)
+        for comp_key, row_info in self.comp_rows.items():
+            if comp_key in relevant:
+                row_info["box"].show_all()
+            else:
+                row_info["box"].hide()
+
+    def _set_component_path(self, comp_key: str, path: str):
+        self.image_components[comp_key] = path
+        if comp_key in self.comp_rows:
+            self.comp_rows[comp_key]["entry"].set_text(path)
+
+    def _on_component_entry_changed(self, comp_key: str, entry):
+        self.image_components[comp_key] = entry.get_text().strip()
+
+    def _on_browse_component(self, comp_key: str):
+        title = COMPONENT_LABELS.get(comp_key, comp_key)
+        dialog = Gtk.FileChooserDialog(
+            title=f"Select {title}",
+            parent=self,
+            action=Gtk.FileChooserAction.OPEN,
+        )
+        dialog.add_buttons(
+            Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL,
+            Gtk.STOCK_OPEN, Gtk.ResponseType.ACCEPT,
+        )
+        if os.path.isdir(self.models_directory):
+            dialog.set_current_folder(self.models_directory)
+        ff = Gtk.FileFilter()
+        ff.set_name("Model / Encoder Files (*.gguf, *.safetensors, *.sft, *.pt, *.ckpt)")
+        for pat in ("*.gguf", "*.safetensors", "*.sft", "*.pt", "*.ckpt"):
+            ff.add_pattern(pat)
+        dialog.add_filter(ff)
+        ff_all = Gtk.FileFilter()
+        ff_all.set_name("All Files (*)")
+        ff_all.add_pattern("*")
+        dialog.add_filter(ff_all)
+
+        resp = dialog.run()
+        if resp == Gtk.ResponseType.ACCEPT:
+            fp = dialog.get_filename()
+            dialog.destroy()
+            if fp:
+                self._set_component_path(comp_key, fp)
+        else:
+            dialog.destroy()
+
+    def _auto_discover_image_components(self, notify: bool = False) -> Dict[str, str]:
+        extra_dirs = [self.models_directory]
+        found = auto_discover_components(
+            self.current_model_path or "",
+            self.active_image_profile,
+            extra_dirs=extra_dirs,
+        )
+        for comp_key in self.comp_rows.keys():
+            self._set_component_path(comp_key, found.get(comp_key, ""))
+        if notify:
+            if found:
+                items = "\n".join(f"• **{COMPONENT_LABELS.get(k, k)}**: `{os.path.basename(v)}`" for k, v in found.items())
+                self._add_system_message(f"Auto-detected companion files:\n{items}")
+            else:
+                self._add_system_message(
+                    "No companion VAE/encoder files found in your models directory yet.\n"
+                    "Click **⬇ T2I Models** in the header to download the recommended files."
+                )
+        return found
+
+    def _on_res_preset_changed(self, combo):
+        idx = combo.get_active()
+        if 0 <= idx < len(self._res_presets):
+            _lbl, w, h = self._res_presets[idx]
+            self.img_width_spin.set_value(w)
+            self.img_height_spin.set_value(h)
+
+    def _on_select_output_folder(self):
+        dialog = Gtk.FileChooserDialog(
+            title="Select Generated Images Output Directory",
+            parent=self,
+            action=Gtk.FileChooserAction.SELECT_FOLDER,
+        )
+        dialog.add_buttons(
+            Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL,
+            Gtk.STOCK_OPEN, Gtk.ResponseType.ACCEPT,
+        )
+        os.makedirs(self.output_directory, exist_ok=True)
+        dialog.set_current_folder(self.output_directory)
+        if dialog.run() == Gtk.ResponseType.ACCEPT:
+            folder = dialog.get_filename()
+            if folder:
+                self.output_directory = folder
+                self._update_mode_ui()
+        dialog.destroy()
+
+    def _open_path_in_desktop(self, path: str):
+        try:
+            os.makedirs(path, exist_ok=True) if not os.path.isfile(path) else None
+            subprocess.Popen(["xdg-open", path])
+        except Exception as e:
+            self._add_system_message(f"⚠️ Could not open path `{path}`: {e}")
+
+    def _show_full_image_dialog(self, image_path: str):
+        dialog = Gtk.Dialog(
+            title=f"Generated Image — {os.path.basename(image_path)}",
+            transient_for=self,
+            flags=0,
+        )
+        dialog.add_buttons(Gtk.STOCK_CLOSE, Gtk.ResponseType.CLOSE)
+        dialog.set_default_size(860, 860)
+        area = dialog.get_content_area()
+        sc = Gtk.ScrolledWindow()
+        sc.set_vexpand(True)
+        sc.set_hexpand(True)
+        try:
+            pb = GdkPixbuf.Pixbuf.new_from_file(image_path)
+            img = Gtk.Image.new_from_pixbuf(pb)
+        except Exception:
+            img = Gtk.Label(label=f"Unable to display {image_path}")
+        sc.add(img)
+        area.pack_start(sc, True, True, 0)
+        dialog.show_all()
+        dialog.run()
+        dialog.destroy()
+
+    def _save_image_as(self, src_path: str):
+        dialog = Gtk.FileChooserDialog(
+            title="Save Generated Image As",
+            parent=self,
+            action=Gtk.FileChooserAction.SAVE,
+        )
+        dialog.add_buttons(
+            Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL,
+            Gtk.STOCK_SAVE, Gtk.ResponseType.ACCEPT,
+        )
+        dialog.set_do_overwrite_confirmation(True)
+        dialog.set_current_name(os.path.basename(src_path))
+        if dialog.run() == Gtk.ResponseType.ACCEPT:
+            dst = dialog.get_filename()
+            if dst:
+                try:
+                    shutil.copy2(src_path, dst)
+                    self._add_system_message(f"💾 Saved image to `{dst}`")
+                except Exception as e:
+                    self._add_system_message(f"⚠️ Save failed: {e}")
+        dialog.destroy()
+
+    def on_show_t2i_setup_dialog(self):
+        """Shows the 3 Recommended GGUF Text-to-Image Models for RTX 3060 12GB with one-click downloader."""
+        dialog = Gtk.Dialog(
+            title="Recommended GGUF Text-to-Image Models (RTX 3060 12GB)",
+            transient_for=self,
+            flags=0,
+        )
+        dialog.add_buttons(Gtk.STOCK_CLOSE, Gtk.ResponseType.CLOSE)
+        dialog.set_default_size(780, 620)
+
+        area = dialog.get_content_area()
+        area.set_spacing(10)
+        area.set_margin_start(14)
+        area.set_margin_end(14)
+        area.set_margin_top(14)
+        area.set_margin_bottom(14)
+
+        sd_cli_path = self.engine.find_sd_cli()
+        hdr_lbl = Gtk.Label(xalign=0)
+        hdr_lbl.set_line_wrap(True)
+        hdr_lbl.set_markup(
+            f"<b>Hardware Target:</b> NVIDIA RTX 3060 (12GB VRAM) + 32GB RAM  |  "
+            f"<b>Models Dir:</b> <tt>{GLib.markup_escape_text(self.models_directory)}</tt>\n"
+            f"<b>Diffusion Engine (sd-cli):</b> "
+            + (f"<span color='#4ade80'>Ready ({GLib.markup_escape_text(sd_cli_path)})</span>"
+               if sd_cli_path else "<span color='#fbbf24'>Not found in PATH / ~/.local/bin</span>")
+        )
+        area.pack_start(hdr_lbl, False, False, 0)
+
+        sc = Gtk.ScrolledWindow()
+        sc.set_vexpand(True)
+        cards_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        sc.add(cards_box)
+        area.pack_start(sc, True, True, 0)
+
+        progress_bar = Gtk.ProgressBar()
+        progress_bar.set_show_text(True)
+        progress_bar.set_text("Idle — Click Download on any model to fetch GGUF + companions")
+        area.pack_start(progress_bar, False, False, 0)
+
+        status_widgets: List[Tuple[str, str, Gtk.Label]] = []
+        active_download = [False]
+
+        def resolve_local_file(subdir: str, filename: str) -> str:
+            cand = os.path.join(self.models_directory, subdir, filename)
+            if os.path.isfile(cand):
+                return cand
+            for root, _dirs, files in os.walk(self.models_directory):
+                if filename in files:
+                    return os.path.join(root, filename)
+            return ""
+
+        def refresh_statuses():
+            for subdir, fname, lbl in status_widgets:
+                found = resolve_local_file(subdir, fname)
+                if found:
+                    lbl.set_markup("<span color='#4ade80'><b>✓ Installed</b></span>")
+                else:
+                    lbl.set_markup("<span color='#fbbf24'>⬇ Missing</span>")
+
+        def download_files_seq(files_to_get: List[Dict[str, str]], profile_id: str):
+            if active_download[0]:
+                return
+            active_download[0] = True
+
+            def worker():
+                try:
+                    last_diff_path = ""
+                    for idx, fspec in enumerate(files_to_get, 1):
+                        fname = fspec["filename"]
+                        subdir = fspec["subdir"]
+                        url = fspec["url"]
+                        if resolve_local_file(subdir, fname):
+                            if fspec["role"] == "diffusion":
+                                last_diff_path = resolve_local_file(subdir, fname)
+                            continue
+                        dest_dir = os.path.join(self.models_directory, subdir)
+                        os.makedirs(dest_dir, exist_ok=True)
+                        dest = os.path.join(dest_dir, fname)
+                        part = dest + ".part"
+                        GLib.idle_add(progress_bar.set_fraction, 0.0)
+                        GLib.idle_add(
+                            progress_bar.set_text,
+                            f"[{idx}/{len(files_to_get)}] Downloading {fname}...",
+                        )
+                        req = urllib.request.Request(url, headers={"User-Agent": "GGUFpanel/2.1"})
+                        with urllib.request.urlopen(req, timeout=60) as resp:
+                            total = int(resp.headers.get("Content-Length") or 0)
+                            done = 0
+                            with open(part, "wb") as out_f:
+                                while True:
+                                    chunk = resp.read(1024 * 256)
+                                    if not chunk:
+                                        break
+                                    out_f.write(chunk)
+                                    done += len(chunk)
+                                    if total > 0:
+                                        frac = min(1.0, done / total)
+                                        mb_done = done / (1024 ** 2)
+                                        mb_tot = total / (1024 ** 2)
+                                        GLib.idle_add(progress_bar.set_fraction, frac)
+                                        GLib.idle_add(
+                                            progress_bar.set_text,
+                                            f"[{idx}/{len(files_to_get)}] {fname}: {mb_done:.1f} / {mb_tot:.1f} MB ({frac*100:.0f}%)",
+                                        )
+                        os.replace(part, dest)
+                        if fspec["role"] == "diffusion":
+                            last_diff_path = dest
+                        GLib.idle_add(refresh_statuses)
+                        GLib.idle_add(self.refresh_model_browser)
+
+                    GLib.idle_add(progress_bar.set_fraction, 1.0)
+                    GLib.idle_add(progress_bar.set_text, "✅ Download complete! Models ready in GGUFpanel.")
+                    if last_diff_path and os.path.isfile(last_diff_path):
+                        GLib.idle_add(self.load_model, last_diff_path)
+                except Exception as exc:
+                    GLib.idle_add(progress_bar.set_text, f"⚠️ Download error: {exc}")
+                finally:
+                    active_download[0] = False
+
+            threading.Thread(target=worker, daemon=True).start()
+
+        for rec in RECOMMENDED_T2I_MODELS:
+            card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+            card.get_style_context().add_class("meta-card")
+
+            top = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+            title = Gtk.Label(xalign=0)
+            title.set_markup(
+                f"<b>#{rec['rank']}. {GLib.markup_escape_text(str(rec['name']))}</b> — "
+                f"<span color='#38bdf8'>{GLib.markup_escape_text(str(rec['tagline']))}</span>"
+            )
+            top.pack_start(title, True, True, 0)
+
+            dl_all_btn = Gtk.Button(label="⬇ Download Pack")
+            dl_all_btn.connect(
+                "clicked",
+                lambda _b, fs=rec["files"], pid=rec["profile_id"]: download_files_seq(list(fs), str(pid)),
+            )
+            top.pack_end(dl_all_btn, False, False, 0)
+            card.pack_start(top, False, False, 0)
+
+            desc = Gtk.Label(label=str(rec["summary"]), xalign=0)
+            desc.set_line_wrap(True)
+            card.pack_start(desc, False, False, 0)
+
+            spec_lbl = Gtk.Label(xalign=0)
+            spec_lbl.set_markup(
+                f"<span color='#94a3b8'><b>VRAM:</b> {GLib.markup_escape_text(str(rec['vram_estimate']))}  |  "
+                f"<b>Defaults:</b> {rec['steps']} steps, CFG {rec['cfg']}, {rec['sampler']}</span>"
+            )
+            card.pack_start(spec_lbl, False, False, 0)
+
+            for fspec in rec["files"]:
+                frow = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+                role_b = Gtk.Label(label=fspec["role"].upper())
+                role_b.get_style_context().add_class("format-badge")
+                frow.pack_start(role_b, False, False, 0)
+
+                fn_lbl = Gtk.Label(label=f"{fspec['filename']} ({fspec['size_label']})", xalign=0)
+                fn_lbl.set_selectable(True)
+                frow.pack_start(fn_lbl, True, True, 0)
+
+                st_lbl = Gtk.Label(xalign=1)
+                frow.pack_end(st_lbl, False, False, 0)
+                status_widgets.append((fspec["subdir"], fspec["filename"], st_lbl))
+
+                one_btn = Gtk.Button(label="Get")
+                one_btn.connect(
+                    "clicked",
+                    lambda _b, fs=[fspec], pid=rec["profile_id"]: download_files_seq(fs, str(pid)),
+                )
+                frow.pack_end(one_btn, False, False, 0)
+                card.pack_start(frow, False, False, 0)
+
+            cards_box.pack_start(card, False, False, 0)
+
+        refresh_statuses()
+        dialog.show_all()
+        dialog.run()
+        dialog.destroy()
+
     def _on_input_key_press(self, widget, event):
         if event.keyval == Gdk.KEY_Return and not (event.state & Gdk.ModifierType.SHIFT_MASK):
             self.on_send()
@@ -1154,6 +1847,13 @@ class GGUFpanelWindow(Gtk.ApplicationWindow):
         buf = self.input_entry.get_buffer()
         start, end = buf.get_bounds()
         text = buf.get_text(start, end, True).strip()
+        if self.app_mode == "image":
+            if not text:
+                return
+            buf.set_text("")
+            self._generate_image_from_prompt(text)
+            return
+
         if not text and not self.context_attachments:
             return
         if not text and self.context_attachments:
@@ -1232,6 +1932,178 @@ class GGUFpanelWindow(Gtk.ApplicationWindow):
             n_gpu_layers=ngl,
             on_status=on_status,
             on_token=on_token,
+            on_done=on_done,
+            on_error=on_error,
+        )
+
+    def _generate_image_from_prompt(self, prompt_text: str):
+        if not self.current_model_path or not os.path.isfile(self.current_model_path):
+            self._add_system_message(
+                "⚠️ No diffusion model selected. Select a `.gguf` text-to-image model in the "
+                "**Model Files Browser** on the left, or click **⬇ T2I Models** in the header."
+            )
+            return
+
+        prof = IMAGE_PROFILES.get(self.active_image_profile)
+        if prof:
+            missing = [
+                COMPONENT_LABELS.get(k, k)
+                for k in prof.required_components
+                if not (self.image_components.get(k) or "").strip()
+            ]
+            if missing:
+                self._add_system_message(
+                    f"⚠️ Missing required companion file(s) for **{prof.display_name}**:\n"
+                    + "\n".join(f"• {m}" for m in missing)
+                    + "\n\nSet them in the **Companion Files** sidebar panel or click **⬇ T2I Models** to download them."
+                )
+                return
+
+        ref_imgs = [
+            a.file_path for a in self.context_attachments
+            if a.file_type == "IMAGE" and os.path.isfile(a.file_path)
+        ]
+        if ref_imgs:
+            self._add_user_message(f"🎨 [Ref: {', '.join(os.path.basename(p) for p in ref_imgs)}]\n{prompt_text}")
+        else:
+            self._add_user_message(f"🎨 {prompt_text}")
+
+        width = int(self.img_width_spin.get_value())
+        height = int(self.img_height_spin.get_value())
+        steps = int(self.img_steps_spin.get_value())
+        cfg_scale = float(self.img_cfg_spin.get_value())
+        sampler = self.img_sampler_combo.get_active_text() or "euler"
+        seed = int(self.img_seed_spin.get_value())
+        neg_prompt = self.img_neg_entry.get_text().strip()
+        clip_on_cpu = self.chk_clip_on_cpu.get_active()
+        offload_to_cpu = self.chk_offload_cpu.get_active()
+        vae_tiling = self.chk_vae_tiling.get_active()
+        flash_attn = self.chk_flash_attn.get_active()
+
+        os.makedirs(self.output_directory, exist_ok=True)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        out_path = os.path.join(self.output_directory, f"ggufpanel_{ts}.png")
+
+        assist_bubble = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        assist_bubble.get_style_context().add_class("chat-bubble-assistant")
+
+        model_title = os.path.basename(self.current_model_path)
+        meta = Gtk.Label(
+            label=f"Image Gen ({model_title} • {width}×{height} • {steps} steps • CFG {cfg_scale:.1f})",
+            xalign=0,
+        )
+        meta.get_style_context().add_class("chat-meta")
+        assist_bubble.pack_start(meta, False, False, 0)
+
+        status_lbl = Gtk.Label(label="⏳ Loading diffusion weights onto RTX 3060...", xalign=0)
+        status_lbl.set_line_wrap(True)
+        assist_bubble.pack_start(status_lbl, False, False, 0)
+
+        pbar = Gtk.ProgressBar()
+        pbar.set_show_text(True)
+        pbar.set_text("Preparing pipeline...")
+        assist_bubble.pack_start(pbar, False, False, 0)
+
+        cancel_btn = Gtk.Button(label="Cancel Generation")
+        cancel_btn.connect("clicked", lambda _b: self.engine.stop_image_generation())
+        assist_bubble.pack_start(cancel_btn, False, False, 0)
+
+        self.chat_messages_box.pack_start(assist_bubble, False, False, 0)
+        self.chat_messages_box.show_all()
+        self._scroll_to_bottom()
+
+        def on_status(msg):
+            GLib.idle_add(self.status_gpu_label.set_text, msg)
+            GLib.idle_add(status_lbl.set_text, msg)
+
+        def on_progress(cur_step, tot_step, _line):
+            frac = min(1.0, max(0.0, cur_step / float(max(1, tot_step))))
+            GLib.idle_add(pbar.set_fraction, frac)
+            GLib.idle_add(pbar.set_text, f"Sampling step {cur_step} / {tot_step} ({frac*100:.0f}%)")
+
+        def on_done(generated_path, elapsed_s, _logs):
+            def render_result():
+                for w in (status_lbl, pbar, cancel_btn):
+                    if w.get_parent() == assist_bubble:
+                        assist_bubble.remove(w)
+
+                img_frame = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+                img_frame.get_style_context().add_class("image-preview-frame")
+                try:
+                    pb = GdkPixbuf.Pixbuf.new_from_file_at_scale(generated_path, 520, 520, True)
+                    img_widget = Gtk.Image.new_from_pixbuf(pb)
+                    img_frame.pack_start(img_widget, False, False, 0)
+                except Exception as exc:
+                    img_frame.pack_start(Gtk.Label(label=f"Preview unavailable: {exc}"), False, False, 0)
+
+                assist_bubble.pack_start(img_frame, False, False, 0)
+
+                info_lbl = Gtk.Label(
+                    label=f"✅ Generated in {elapsed_s:.1f}s → {generated_path}",
+                    xalign=0,
+                )
+                info_lbl.set_line_wrap(True)
+                info_lbl.set_selectable(True)
+                info_lbl.get_style_context().add_class("chat-meta")
+                assist_bubble.pack_start(info_lbl, False, False, 0)
+
+                act_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+                btn_view = Gtk.Button(label="🔍 View Full Size")
+                btn_view.connect("clicked", lambda _b, p=generated_path: self._show_full_image_dialog(p))
+                act_row.pack_start(btn_view, False, False, 0)
+
+                btn_dir = Gtk.Button(label="📁 Open Folder")
+                btn_dir.connect("clicked", lambda _b, d=os.path.dirname(generated_path): self._open_path_in_desktop(d))
+                act_row.pack_start(btn_dir, False, False, 0)
+
+                btn_save = Gtk.Button(label="💾 Save As...")
+                btn_save.connect("clicked", lambda _b, p=generated_path: self._save_image_as(p))
+                act_row.pack_start(btn_save, False, False, 0)
+
+                btn_ref = Gtk.Button(label="🖼️ Use as Reference")
+                btn_ref.connect("clicked", lambda _b, p=generated_path: self.add_context_file(p))
+                act_row.pack_start(btn_ref, False, False, 0)
+
+                assist_bubble.pack_start(act_row, False, False, 0)
+                assist_bubble.show_all()
+                self._scroll_to_bottom()
+
+            GLib.idle_add(render_result)
+
+        def on_error(err):
+            def show_err():
+                for w in (pbar, cancel_btn):
+                    if w.get_parent() == assist_bubble:
+                        assist_bubble.remove(w)
+                status_lbl.set_text(f"⚠️ {err}")
+                assist_bubble.show_all()
+                self._scroll_to_bottom()
+
+            GLib.idle_add(show_err)
+
+        self.engine.generate_image(
+            model_path=self.current_model_path,
+            profile_id=self.active_image_profile,
+            prompt=prompt_text,
+            output_path=out_path,
+            components=dict(self.image_components),
+            negative_prompt=neg_prompt,
+            width=width,
+            height=height,
+            steps=steps,
+            cfg_scale=cfg_scale,
+            sampler=sampler,
+            seed=seed,
+            clip_on_cpu=clip_on_cpu,
+            offload_to_cpu=offload_to_cpu,
+            vae_tiling=vae_tiling,
+            flash_attn=flash_attn,
+            sigmas=prof.default_sigmas if prof else "",
+            flow_shift=prof.default_flow_shift if prof else None,
+            ref_images=ref_imgs if (prof and prof.supports_reference_edit) else None,
+            init_image=ref_imgs[0] if (ref_imgs and not (prof and prof.supports_reference_edit)) else "",
+            on_status=on_status,
+            on_progress=on_progress,
             on_done=on_done,
             on_error=on_error,
         )

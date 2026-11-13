@@ -11,9 +11,13 @@ Styled after **PythonPanel** with a sleek dark neon theme (`#0b0f19`), GGUFpanel
 ## Features
 
 - **Instant GGUF Binary Parser**: Inspects GGUF headers (v1, v2, v3) without loading full weights into memory:
-  - Architecture detection (`llama`, `qwen2`, `phi3`, `mistral`, `gemma2`, etc.)
+  - Architecture detection (`llama`, `qwen2`, `phi3`, `mistral`, `gemma2`, plus diffusion families `z-image-turbo`, `flux1-dev`, `qwen-image-2.1`, `sd3.5`, `sdxl`, etc.)
   - Quantization formats (`Q4_K_M`, `Q5_K_M`, `Q8_0`, `IQ3_XS`, `IQ4_NL`, `F16`, etc.)
   - Total parameter count, context window size, block/layer counts, and tensor specifications.
+- **GGUF Text-to-Image Studio (`stable-diffusion.cpp` / `sd-cli`)**:
+  - Auto-detects GGUF diffusion models (**Z-Image-Turbo**, **FLUX.1-dev/schnell**, **Qwen-Image-2.1**, **SD 3.5**, **SDXL**) and companion files (`--vae`, `--llm`, `--clip_l`, `--clip_g`, `--t5xxl`).
+  - Built-in **⬇ T2I Models** setup & downloader tailored for RTX 3060 12GB VRAM + 32GB RAM.
+  - Inline image preview, progress tracking, resolution presets, samplers, and RTX 3060 CPU/VRAM offload toggles.
 - **Hardware & GPU Offload Controls**:
   - Auto-detects NVIDIA GPUs (e.g. GeForce RTX 3060 12GB VRAM) via PyTorch/CUDA.
   - Interactive slider for `-ngl` (number of GPU layers offloaded).

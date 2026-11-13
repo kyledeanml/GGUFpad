@@ -1,12 +1,14 @@
 """
-GGUFpanel LLM Inference Engine & Runner
+GGUFpanel LLM & Diffusion Image Inference Engine
 Supports:
 1. Automatic llama-server launch with GPU offloading (--n-gpu-layers) & health-check polling
 2. Native llama-cpp-python (if installed)
 3. Direct OpenAI-compatible / local GGUF server streaming client with multi-turn history
+4. Text-to-image / image-editing generation via stable-diffusion.cpp (sd-cli) with CUDA
 """
 
 import os
+import re
 import sys
 import subprocess
 import threading
@@ -15,6 +17,8 @@ import json
 import urllib.request
 import urllib.error
 from typing import Callable, Optional, Dict, Any, List
+
+from gguf_image_profiles import IMAGE_PROFILES
 
 try:
     import torch
@@ -28,13 +32,15 @@ except ImportError:
 
 
 class GGUFEngine:
-    """Manages GGUF model processes, readiness polling, streaming responses, and GPU offloading."""
+    """Manages GGUF LLM and Diffusion (stable-diffusion.cpp) processes and GPU offloading."""
 
     def __init__(self):
         self.current_process: Optional[subprocess.Popen] = None
+        self.sd_process: Optional[subprocess.Popen] = None
         self.server_port: int = 8080
         self.is_running: bool = False
         self.is_ready: bool = False
+        self.is_generating_image: bool = False
         self.loaded_model_path: Optional[str] = None
         self.loaded_ngl: int = -1
         self.has_llama_cpp: bool = False
@@ -49,17 +55,22 @@ class GGUFEngine:
             self.has_llama_cpp = False
 
     def get_gpu_info(self) -> Dict[str, Any]:
+        sd_cli = self.find_sd_cli()
         return {
             "cuda_available": CUDA_AVAILABLE,
             "device_name": CUDA_DEVICE_NAME,
             "vram_gb": CUDA_VRAM_GB,
             "has_llama_cpp_module": self.has_llama_cpp,
+            "has_sd_cli": bool(sd_cli),
+            "sd_cli_path": sd_cli,
         }
 
-    def find_llama_server(self) -> Optional[str]:
-        binary = "llama-server"
+    def _find_binary(self, names: List[str]) -> Optional[str]:
+        base_dir = os.path.dirname(os.path.abspath(__file__))
         paths_to_check = [
+            os.path.join(base_dir, "bin"),
             os.path.expanduser("~/.local/bin"),
+            os.path.expanduser("~/.local/share/stable-diffusion.cpp/build/bin"),
             "/usr/local/bin",
             "/usr/bin",
         ] + os.environ.get("PATH", "").split(os.path.pathsep)
@@ -67,10 +78,17 @@ class GGUFEngine:
         for p in paths_to_check:
             if not p:
                 continue
-            cand = os.path.join(p, binary)
-            if os.path.isfile(cand) and os.access(cand, os.X_OK):
-                return cand
+            for binary in names:
+                cand = os.path.join(p, binary)
+                if os.path.isfile(cand) and os.access(cand, os.X_OK):
+                    return cand
         return None
+
+    def find_llama_server(self) -> Optional[str]:
+        return self._find_binary(["llama-server"])
+
+    def find_sd_cli(self) -> Optional[str]:
+        return self._find_binary(["sd-cli", "sd"])
 
     def start_llama_server(
         self,
@@ -299,3 +317,232 @@ class GGUFEngine:
                     on_error(f"Inference error: {e}")
 
         threading.Thread(target=run_request, daemon=True).start()
+
+    def stop_image_generation(self):
+        if self.sd_process and self.sd_process.poll() is None:
+            self.sd_process.terminate()
+            try:
+                self.sd_process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                self.sd_process.kill()
+        self.sd_process = None
+        self.is_generating_image = False
+
+    def stop_all(self):
+        self.stop_server()
+        self.stop_image_generation()
+
+    def build_sd_command(
+        self,
+        sd_cli_path: str,
+        model_path: str,
+        profile_id: str,
+        prompt: str,
+        output_path: str,
+        components: Optional[Dict[str, str]] = None,
+        negative_prompt: str = "",
+        width: int = 1024,
+        height: int = 1024,
+        steps: int = 20,
+        cfg_scale: float = 1.0,
+        sampler: str = "euler",
+        seed: int = -1,
+        clip_on_cpu: bool = False,
+        offload_to_cpu: bool = False,
+        vae_tiling: bool = False,
+        flash_attn: bool = True,
+        sigmas: str = "",
+        flow_shift: Optional[float] = None,
+        ref_images: Optional[List[str]] = None,
+        init_image: str = "",
+        strength: float = 0.75,
+    ) -> List[str]:
+        """Constructs an sd-cli command line tailored to the diffusion model profile."""
+        profile = IMAGE_PROFILES.get(profile_id)
+        model_flag = profile.model_flag if profile else "--diffusion-model"
+        comps = components or {}
+
+        cmd = [sd_cli_path, model_flag, model_path]
+
+        comp_flags = [
+            ("vae", "--vae"),
+            ("llm", "--llm"),
+            ("llm_vision", "--llm_vision"),
+            ("clip_l", "--clip_l"),
+            ("clip_g", "--clip_g"),
+            ("t5xxl", "--t5xxl"),
+        ]
+        for key, flag in comp_flags:
+            val = (comps.get(key) or "").strip()
+            if val:
+                cmd.extend([flag, val])
+
+        cmd.extend(["-p", prompt])
+        if negative_prompt and negative_prompt.strip():
+            cmd.extend(["-n", negative_prompt.strip()])
+
+        cmd.extend([
+            "-W", str(int(width)),
+            "-H", str(int(height)),
+            "--steps", str(int(steps)),
+            "--cfg-scale", f"{float(cfg_scale):.2f}",
+            "--sampling-method", sampler or "euler",
+            "-s", str(int(seed)),
+            "-o", output_path,
+        ])
+
+        if sigmas:
+            cmd.extend(["--sigmas", sigmas])
+        if flow_shift is not None:
+            cmd.extend(["--flow-shift", str(flow_shift)])
+
+        if clip_on_cpu:
+            cmd.extend(["--backend", "te=cpu"])
+        if offload_to_cpu:
+            cmd.append("--offload-to-cpu")
+        if vae_tiling:
+            cmd.append("--vae-tiling")
+        if flash_attn:
+            cmd.extend(["--flash-attn", "on"])
+
+        if ref_images and profile and profile.supports_reference_edit:
+            for rpath in ref_images:
+                if rpath and os.path.isfile(rpath):
+                    cmd.extend(["-r", rpath])
+        elif init_image and os.path.isfile(init_image):
+            cmd.extend(["-i", init_image, "--strength", f"{float(strength):.2f}"])
+
+        cmd.append("-v")
+        return cmd
+
+    def generate_image(
+        self,
+        model_path: str,
+        profile_id: str,
+        prompt: str,
+        output_path: str,
+        components: Optional[Dict[str, str]] = None,
+        negative_prompt: str = "",
+        width: int = 1024,
+        height: int = 1024,
+        steps: int = 20,
+        cfg_scale: float = 1.0,
+        sampler: str = "euler",
+        seed: int = -1,
+        clip_on_cpu: bool = False,
+        offload_to_cpu: bool = False,
+        vae_tiling: bool = False,
+        flash_attn: bool = True,
+        sigmas: str = "",
+        flow_shift: Optional[float] = None,
+        ref_images: Optional[List[str]] = None,
+        init_image: str = "",
+        strength: float = 0.75,
+        on_status: Optional[Callable[[str], None]] = None,
+        on_progress: Optional[Callable[[int, int, str], None]] = None,
+        on_log: Optional[Callable[[str], None]] = None,
+        on_done: Optional[Callable[[str, float, str], None]] = None,
+        on_error: Optional[Callable[[str], None]] = None,
+    ):
+        """Runs stable-diffusion.cpp (sd-cli) in a background thread and streams progress."""
+
+        def run_sd():
+            sd_cli = self.find_sd_cli()
+            if not sd_cli:
+                if on_error:
+                    on_error(
+                        "The 'sd-cli' binary (stable-diffusion.cpp) was not found in PATH or ~/.local/bin."
+                    )
+                return
+
+            # Free GPU VRAM held by llama-server before running diffusion inference
+            if self.is_running:
+                if on_status:
+                    on_status("GPU: Releasing LLM VRAM for diffusion...")
+                self.stop_server()
+
+            self.stop_image_generation()
+
+            out_dir = os.path.dirname(os.path.abspath(output_path))
+            if out_dir:
+                os.makedirs(out_dir, exist_ok=True)
+
+            cmd = self.build_sd_command(
+                sd_cli_path=sd_cli,
+                model_path=model_path,
+                profile_id=profile_id,
+                prompt=prompt,
+                output_path=output_path,
+                components=components,
+                negative_prompt=negative_prompt,
+                width=width,
+                height=height,
+                steps=steps,
+                cfg_scale=cfg_scale,
+                sampler=sampler,
+                seed=seed,
+                clip_on_cpu=clip_on_cpu,
+                offload_to_cpu=offload_to_cpu,
+                vae_tiling=vae_tiling,
+                flash_attn=flash_attn,
+                sigmas=sigmas,
+                flow_shift=flow_shift,
+                ref_images=ref_images,
+                init_image=init_image,
+                strength=strength,
+            )
+
+            t0 = time.time()
+            logs: List[str] = []
+            step_re = re.compile(r"(\d+)\s*/\s*(\d+)")
+            if on_status:
+                on_status(f"GPU: Generating image ({profile_id})...")
+
+            try:
+                self.is_generating_image = True
+                proc = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    bufsize=1,
+                )
+                self.sd_process = proc
+
+                if proc.stdout:
+                    for raw_line in proc.stdout:
+                        line = raw_line.rstrip("\r\n")
+                        if line:
+                            logs.append(line)
+                            if on_log:
+                                on_log(line)
+                            m = step_re.search(line)
+                            if m:
+                                cur_s, tot_s = int(m.group(1)), int(m.group(2))
+                                if tot_s > 0 and cur_s <= tot_s:
+                                    if on_progress:
+                                        on_progress(cur_s, tot_s, line)
+                                    if on_status:
+                                        on_status(f"GPU: Sampling step {cur_s}/{tot_s}...")
+
+                rc = proc.wait()
+                elapsed = time.time() - t0
+                self.is_generating_image = False
+                if self.sd_process == proc:
+                    self.sd_process = None
+
+                if rc == 0 and os.path.isfile(output_path):
+                    if on_status:
+                        on_status(f"GPU: Generated in {elapsed:.1f}s ({CUDA_DEVICE_NAME})")
+                    if on_done:
+                        on_done(output_path, elapsed, "\n".join(logs[-40:]))
+                else:
+                    tail = "\n".join(logs[-15:]) if logs else "No output from sd-cli."
+                    if on_error:
+                        on_error(f"sd-cli exited with code {rc}.\n\n{tail}")
+            except Exception as e:
+                self.is_generating_image = False
+                if on_error:
+                    on_error(f"Image generation error: {e}")
+
+        threading.Thread(target=run_sd, daemon=True).start()

@@ -39,6 +39,65 @@ SUPPORTED_MODEL_EXTENSIONS = (
 )
 
 
+GGML_TYPE_NAMES = {
+    0: "F32",
+    1: "F16",
+    2: "Q4_0",
+    3: "Q4_1",
+    6: "Q5_0",
+    7: "Q5_1",
+    8: "Q8_0",
+    9: "Q8_1",
+    10: "Q2_K",
+    11: "Q3_K",
+    12: "Q4_K",
+    13: "Q5_K",
+    14: "Q6_K",
+    15: "Q8_K",
+    16: "IQ2_XXS",
+    17: "IQ2_XS",
+    18: "IQ3_XXS",
+    19: "IQ1_S",
+    20: "IQ4_NL",
+    21: "IQ3_S",
+    22: "IQ2_S",
+    23: "IQ4_XS",
+    24: "I8",
+    25: "I16",
+    26: "I32",
+    27: "I64",
+    28: "F64",
+    29: "IQ1_M",
+    30: "BF16",
+    34: "TQ1_0",
+    35: "TQ2_0",
+}
+
+IMAGE_ARCHITECTURES = {
+    "flux",
+    "flux1",
+    "flux2",
+    "flux3",
+    "z_image",
+    "z-image",
+    "lumina2",
+    "nextdit",
+    "qwen_image",
+    "qwen-image",
+    "qwen_image_2_1",
+    "sd3",
+    "sd3.5",
+    "sdxl",
+    "sd1",
+    "sd2",
+    "sd",
+    "stable-diffusion",
+    "chroma",
+    "wan",
+    "hunyuan_video",
+}
+
+
 class GGUFReader:
     """Reads and parses GGUF and other model headers without loading weights."""
 
@@ -53,6 +112,8 @@ class GGUFReader:
         self.computed_params = 0
         self.metadata: Dict[str, Any] = {}
         self.tensors: List[Dict[str, Any]] = []
+        self.tensor_names: List[str] = []
+        self.tensor_type_counts: Dict[int, int] = {}
         self._parse()
 
     def _read_string(self, f) -> str:
@@ -148,19 +209,22 @@ class GGUFReader:
             val = self._read_value(f, val_type)
             self.metadata[key] = val
 
-        # Read tensor info headers to compute exact parameter count
+        # Read tensor info headers to compute exact parameter count and detect architecture/quantization
         total_elements = 0
         try:
-            for _ in range(self.tensor_count):
+            for idx in range(self.tensor_count):
                 t_name = self._read_string(f)
                 if not t_name:
                     break
+                if idx < 800:
+                    self.tensor_names.append(t_name)
                 n_dims_bytes = f.read(4)
                 if len(n_dims_bytes) < 4:
                     break
                 n_dims = struct.unpack("<I", n_dims_bytes)[0]
                 dims = struct.unpack(f"<{n_dims}Q", f.read(8 * n_dims))
                 t_type, t_offset = struct.unpack("<IQ", f.read(12))
+                self.tensor_type_counts[t_type] = self.tensor_type_counts.get(t_type, 0) + 1
                 numel = 1
                 for d in dims:
                     numel *= d
@@ -178,7 +242,8 @@ class GGUFReader:
             if 0 < header_len < 100 * 1024 * 1024:
                 header_json = json.loads(f.read(header_len).decode("utf-8", errors="replace"))
                 meta = header_json.get("__metadata__", {})
-                self.metadata["general.architecture"] = meta.get("modelspec.architecture", "safetensors")
+                arch = meta.get("modelspec.architecture") or meta.get("ss_base_model_version") or "safetensors"
+                self.metadata["general.architecture"] = arch
                 dtypes = set()
                 total_elements = 0
                 t_count = 0
@@ -186,6 +251,8 @@ class GGUFReader:
                     if k == "__metadata__" or not isinstance(v, dict):
                         continue
                     t_count += 1
+                    if len(self.tensor_names) < 800:
+                        self.tensor_names.append(k)
                     if "dtype" in v:
                         dtypes.add(v["dtype"])
                     shape = v.get("shape", [])
@@ -209,8 +276,112 @@ class GGUFReader:
         }
         self.metadata["general.architecture"] = format_names.get(self.ext, f"Model ({self.ext})")
 
+    def _infer_image_profile_from_tensors_and_name(self) -> str:
+        """Detects text-to-image diffusion family from GGUF metadata, tensor names, or filename."""
+        raw_arch = str(self.metadata.get("general.architecture", "")).lower().strip()
+        fname = os.path.basename(self.file_path).lower()
+        t_joined = " ".join(self.tensor_names[:300])
+
+        # Exclude standalone text encoders & VLMs even if named similarly (e.g. Qwen3-4B, Qwen3VL-8B, T5, CLIP)
+        if any(k in fname for k in ("t5", "clip_l", "clip_g", "mmproj", "instruct", "qwen2.5-vl", "qwen3-4b", "qwen3vl")):
+            if "diffusion" not in fname and "image" not in fname and "flux" not in fname:
+                return ""
+        if raw_arch in ("llama", "qwen2", "qwen2vl", "qwen3", "qwen3vl", "mistral", "phi3", "gemma2", "t5", "t5encoder"):
+            return ""
+        if any(p in t_joined for p in ("blk.0.attn_q.weight", "encoder.block.0.layer", "text_model.encoder.layers")):
+            if "double_blocks." not in t_joined and "joint_blocks." not in t_joined and "x_embedder." not in t_joined:
+                return ""
+
+        # 1. Explicit architecture tag
+        if raw_arch in ("z_image", "z-image", "lumina2", "nextdit"):
+            return "z-image-turbo" if "turbo" in fname else "z-image"
+        if raw_arch in ("qwen_image", "qwen-image", "qwen_image_2_1"):
+            if "2.1" in fname or "2_1" in fname:
+                return "qwen-image-2.1-turbo" if "turbo" in fname else "qwen-image-2.1"
+            return "qwen-image"
+        if raw_arch.startswith("flux"):
+            if "flux3" in fname or "flux-3" in fname or raw_arch == "flux3":
+                return "flux3-klein"
+            if "flux2" in fname or "flux-2" in fname or raw_arch == "flux2":
+                return "flux2-klein" if "klein" in fname else "flux2-dev"
+            if "schnell" in fname:
+                return "flux1-schnell"
+            if "dev" in fname or raw_arch in ("flux", "flux1"):
+                return "flux1-dev"
+        if raw_arch in ("sd3", "sd3.5"):
+            return "sd3.5"
+        if "sdxl" in raw_arch:
+            return "sdxl"
+        if raw_arch in ("sd", "sd1", "sd2", "stable-diffusion"):
+            return "sd1.5"
+
+        # 2. Tensor-name structural signatures (handles GGUFs lacking general.architecture)
+        has_flux_blocks = (
+            ("double_blocks." in t_joined and "single_blocks." in t_joined)
+            or ("double_stream_blocks." in t_joined and "single_stream_blocks." in t_joined)
+        )
+        if has_flux_blocks:
+            if "flux3" in fname or "flux-3" in fname:
+                return "flux3-klein"
+            if "flux2" in fname or "flux-2" in fname:
+                return "flux2-klein" if "klein" in fname else "flux2-dev"
+            return "flux1-schnell" if "schnell" in fname else "flux1-dev"
+
+        if "cap_embedder." in t_joined or "noise_refiner." in t_joined or "context_refiner." in t_joined:
+            return "z-image-turbo" if "turbo" in fname else "z-image"
+
+        if "transformer_blocks." in t_joined and ("img_mod." in t_joined or "txt_mod." in t_joined or "img_mlp." in t_joined):
+            if "2.1" in fname or "2_1" in fname:
+                return "qwen-image-2.1-turbo" if "turbo" in fname else "qwen-image-2.1"
+            return "qwen-image"
+
+        if "joint_blocks." in t_joined and ("context_embedder." in t_joined or "x_embedder." in t_joined):
+            return "sd3.5"
+
+        if "model.diffusion_model.input_blocks." in t_joined or "conditioner.embedders." in t_joined:
+            if "conditioner.embedders." in t_joined or "label_emb." in t_joined or "sdxl" in fname or "sd_xl" in fname:
+                return "sdxl"
+            return "sd1.5"
+
+        # 3. Filename fallback for diffusion GGUFs/safetensors
+        if "z_image" in fname or "z-image" in fname:
+            return "z-image-turbo" if "turbo" in fname else "z-image"
+        if "qwen_image" in fname or "qwen-image" in fname:
+            if "2.1" in fname or "2_1" in fname:
+                return "qwen-image-2.1-turbo" if "turbo" in fname else "qwen-image-2.1"
+            return "qwen-image"
+        if "flux3" in fname or "flux-3" in fname:
+            return "flux3-klein"
+        if "flux2" in fname or "flux-2" in fname:
+            return "flux2-klein" if "klein" in fname else "flux2-dev"
+        if "flux" in fname and ("dev" in fname or "schnell" in fname or "kontext" in fname or "klein" in fname):
+            return "flux1-schnell" if "schnell" in fname else "flux1-dev"
+        if "sd3.5" in fname or "sd3_" in fname or "sd3-" in fname:
+            return "sd3.5"
+        if "sdxl" in fname or "sd_xl" in fname:
+            return "sdxl"
+
+        return ""
+
+    @property
+    def image_profile(self) -> str:
+        return self._infer_image_profile_from_tensors_and_name()
+
+    @property
+    def is_image_model(self) -> bool:
+        return bool(self.image_profile)
+
+    @property
+    def modality(self) -> str:
+        return "image" if self.is_image_model else "llm"
+
     @property
     def architecture(self) -> str:
+        if "general.architecture" in self.metadata and self.metadata["general.architecture"] not in ("", "safetensors"):
+            return str(self.metadata["general.architecture"])
+        prof = self.image_profile
+        if prof:
+            return prof
         return str(self.metadata.get("general.architecture", "Unknown"))
 
     @property
@@ -254,8 +425,21 @@ class GGUFReader:
             28: "MOSTLY_IQ2_S",
             29: "MOSTLY_IQ2_M",
             30: "MOSTLY_IQ4_XS",
+            31: "MOSTLY_IQ1_M",
+            32: "MOSTLY_BF16",
         }
-        return types_map.get(ftype, f"Type {ftype}" if ftype is not None else "Unknown")
+        if ftype in types_map:
+            return types_map[ftype]
+        if ftype is not None:
+            return f"Type {ftype}"
+        # Fallback for diffusion GGUFs without general.file_type metadata: inspect quantized tensor types
+        if self.tensor_type_counts:
+            quant_counts = {k: v for k, v in self.tensor_type_counts.items() if k not in (0, 1, 30)}
+            pick_map = quant_counts if quant_counts else self.tensor_type_counts
+            dom_type = max(pick_map.items(), key=lambda kv: kv[1])[0]
+            if dom_type in GGML_TYPE_NAMES:
+                return f"MOSTLY_{GGML_TYPE_NAMES[dom_type]}"
+        return "Unknown"
 
     @property
     def context_length(self) -> int:
@@ -271,6 +455,8 @@ class GGUFReader:
         for k in keys:
             if k in self.metadata:
                 return int(self.metadata[k])
+        if self.is_image_model:
+            return 0
         return 4096 if self.is_gguf else 0
 
     @property
@@ -305,6 +491,15 @@ class GGUFReader:
         for k in keys:
             if k in self.metadata:
                 return int(self.metadata[k])
+        # Infer block count from diffusion tensor names if present
+        if self.tensor_names and self.is_image_model:
+            block_indices = set()
+            for tn in self.tensor_names:
+                m = re.search(r"(?:double_blocks|single_blocks|joint_blocks|transformer_blocks|layers)\.(\d+)\.", tn)
+                if m:
+                    block_indices.add(int(m.group(1)))
+            if block_indices:
+                return max(block_indices) + 1
         return 0
 
     def get_summary(self) -> Dict[str, Any]:
@@ -318,4 +513,6 @@ class GGUFReader:
             "Layers (Blocks)": self.layer_count,
             "Tensors Count": self.tensor_count,
             "GGUF Version": f"v{self.version}" if self.is_gguf else self.ext.upper().lstrip("."),
+            "Modality": self.modality,
+            "Image Profile": self.image_profile,
         }
