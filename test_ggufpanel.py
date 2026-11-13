@@ -162,6 +162,10 @@ class TestGGUFpanelIntegrity(unittest.TestCase):
         self.assertIn("btn_attach_context", ui_code)
         self.assertIn("on_load_context_files", ui_code)
         self.assertIn("context_tray_box", ui_code)
+        self.assertIn("chat_overlay", ui_code)
+        self.assertIn("watermark_canvas", ui_code)
+        self.assertIn("chat-canvas-scroll", ui_code)
+        self.assertNotIn('connect_after("draw", self._on_draw_chat_watermark)', ui_code)
 
     def test_context_file_loader_multiformat(self):
         """Verify ContextFileLoader extracts text, tables, notebooks, docx, and image base64 cleanly."""

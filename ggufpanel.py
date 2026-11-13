@@ -304,6 +304,11 @@ class GGUFpanelWindow(Gtk.ApplicationWindow):
             font-weight: bold;
         }
 
+        .chat-canvas-scroll, .chat-canvas-scroll viewport {
+            background-color: transparent;
+            background-image: none;
+        }
+
         .image-preview-frame {
             background-color: #070a14;
             border: 1px solid rgba(0, 240, 255, 0.45);
@@ -775,19 +780,26 @@ class GGUFpanelWindow(Gtk.ApplicationWindow):
         workspace_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         self.paned.pack2(workspace_box, True, False)
 
-        # Message Scroll Area with translucent Yoga-Pad + Floating GPU watermark
+        # Message Scroll Area layered in a Gtk.Overlay above the watermark canvas
+        # so generated images and bubbles always render on top with zero bleed-through.
+        self.chat_overlay = Gtk.Overlay()
+        self.watermark_canvas = Gtk.DrawingArea()
+        self.watermark_canvas.connect("draw", self._on_draw_chat_watermark)
+        self.chat_overlay.add(self.watermark_canvas)
+
         self.chat_scroll = Gtk.ScrolledWindow()
         self.chat_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-        self.chat_scroll.connect_after("draw", self._on_draw_chat_watermark)
+        self.chat_scroll.get_style_context().add_class("chat-canvas-scroll")
 
-        # Overlay chat messages over the canvas
+        # Chat messages & generated image outputs in the foreground overlay
         self.chat_messages_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14)
         self.chat_messages_box.set_margin_start(20)
         self.chat_messages_box.set_margin_end(20)
         self.chat_messages_box.set_margin_top(16)
         self.chat_messages_box.set_margin_bottom(16)
         self.chat_scroll.add(self.chat_messages_box)
-        workspace_box.pack_start(self.chat_scroll, True, True, 0)
+        self.chat_overlay.add_overlay(self.chat_scroll)
+        workspace_box.pack_start(self.chat_overlay, True, True, 0)
 
         # Welcome Card
         self._add_system_message(
@@ -1059,28 +1071,25 @@ class GGUFpanelWindow(Gtk.ApplicationWindow):
         return self._watermark_pixbuf
 
     def _on_draw_chat_watermark(self, widget, cr):
-        """Render the translucent GGUFpanel floating-GPU yoga pad watermark in the chat canvas background."""
-        pixbuf = self._get_watermark_pixbuf(360)
-        if pixbuf is None:
-            return False
-
+        """Render the dark canvas and floating-GPU yoga pad watermark strictly behind all foreground widgets."""
         try:
             alloc = widget.get_allocation()
             view_w = alloc.width
             view_h = alloc.height
-            pw = pixbuf.get_width()
-            ph = pixbuf.get_height()
-
-            if view_w < 150 or view_h < 150:
-                return False
-
-            x = max(10, (view_w - pw) * 0.5)
-            y = max(10, (view_h - ph) * 0.55)
 
             cr.save()
-            cr.set_operator(cairo.OPERATOR_OVER)
-            Gdk.cairo_set_source_pixbuf(cr, pixbuf, x, y)
-            cr.paint_with_alpha(0.22)
+            cr.set_source_rgb(11 / 255.0, 15 / 255.0, 25 / 255.0)
+            cr.paint()
+
+            pixbuf = self._get_watermark_pixbuf(360)
+            if pixbuf is not None and view_w >= 150 and view_h >= 150:
+                pw = pixbuf.get_width()
+                ph = pixbuf.get_height()
+                x = max(10, (view_w - pw) * 0.5)
+                y = max(10, (view_h - ph) * 0.55)
+                cr.set_operator(cairo.OPERATOR_OVER)
+                Gdk.cairo_set_source_pixbuf(cr, pixbuf, x, y)
+                cr.paint_with_alpha(0.22)
             cr.restore()
         except Exception:
             pass
@@ -2067,6 +2076,7 @@ class GGUFpanelWindow(Gtk.ApplicationWindow):
                 assist_bubble.pack_start(act_row, False, False, 0)
                 assist_bubble.show_all()
                 self._scroll_to_bottom()
+                GLib.idle_add(self._scroll_to_bottom, priority=GLib.PRIORITY_LOW)
 
             GLib.idle_add(render_result)
 
