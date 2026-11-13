@@ -1,4 +1,4 @@
---------------------------![GGUFpanel](ggufpanel.svg)
+![GGUFpanel](ggufpanel.svg)
 
 
 # GGUFpanel
